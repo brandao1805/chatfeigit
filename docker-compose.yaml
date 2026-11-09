@@ -1,0 +1,93 @@
+name: chatfei
+services:
+  broker:
+    build:
+      context: .
+      dockerfile: python/Dockerfile
+    command: [broker]
+    init: true
+  python-server-1:
+    build:
+      context: .
+      dockerfile: python/Dockerfile
+    command: [server]
+    init: true
+    depends_on: [broker]
+    environment:
+      NODE_ID: python-server-1
+    volumes:
+      - python-server-1-data:/data
+  python-server-2:
+    build:
+      context: .
+      dockerfile: python/Dockerfile
+    command: [server]
+    init: true
+    depends_on: [broker]
+    environment:
+      NODE_ID: python-server-2
+    volumes:
+      - python-server-2-data:/data
+  python-bot-1:
+    build:
+      context: .
+      dockerfile: python/Dockerfile
+    command: [bot]
+    init: true
+    depends_on: [broker]
+    environment:
+      NODE_ID: python-bot-1
+  python-bot-2:
+    build:
+      context: .
+      dockerfile: python/Dockerfile
+    command: [bot]
+    init: true
+    depends_on: [broker]
+    environment:
+      NODE_ID: python-bot-2
+  java-server-1:
+    build:
+      context: .
+      dockerfile: java/Dockerfile
+    command: [server]
+    init: true
+    depends_on: [broker]
+    environment:
+      NODE_ID: java-server-1
+    volumes:
+      - java-server-1-data:/data
+  java-server-2:
+    build:
+      context: .
+      dockerfile: java/Dockerfile
+    command: [server]
+    init: true
+    depends_on: [broker]
+    environment:
+      NODE_ID: java-server-2
+    volumes:
+      - java-server-2-data:/data
+  java-bot-1:
+    build:
+      context: .
+      dockerfile: java/Dockerfile
+    command: [bot]
+    init: true
+    depends_on: [broker]
+    environment:
+      NODE_ID: java-bot-1
+  java-bot-2:
+    build:
+      context: .
+      dockerfile: java/Dockerfile
+    command: [bot]
+    init: true
+    depends_on: [broker]
+    environment:
+      NODE_ID: java-bot-2
+volumes:
+  python-server-1-data:
+  python-server-2-data:
+  java-server-1-data:
+  java-server-2-data:
