@@ -13,4 +13,5 @@ message Envelope {
  string detail = 7;
  repeated string channels = 8;
  string server_id = 9;
+ string body = 10;
 }

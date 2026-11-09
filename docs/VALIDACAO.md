@@ -1,25 +1,9 @@
-# Validação da Parte 1
+# Validação da Parte 2
 
-Data: 05/11/2026.
+- Java compilado e empacotado com Maven. Contrato Python gerado com Protobuf.
+- Integração ZeroMQ via TCP em processos locais. Um bot Java recebeu publicações de um servidor Python e um bot Python recebeu publicações de um servidor Java, em ambos os casos pelo proxy XSUB/XPUB.
+- Foram verificadas as operações da Parte 1, a rejeição de publicação vazia, a deduplicação local de uma publicação repetida e a recuperação de autor, canal, horário e texto no SQLite após reiniciar cada servidor.
+- A topologia com 10 processos rodou com broker, proxy Pub/Sub, quatro bots e quatro servidores. Os bots receberam publicações e os quatro bancos separados registraram requisições.
+- O YAML do Compose foi conferido com 10 serviços e 4 volumes. O Docker não estava disponível neste ambiente. A execução pelo Compose deve ser conferida no Docker Desktop.
 
-## Verificações executadas
-
-- Compilação e empacotamento Java com Maven: BUILD SUCCESS.
-- Geração do contrato Python a partir de `proto/chat.proto`.
-- Integração TCP/ZeroMQ real, com mensagens Protobuf:
-  - bot Java -> servidor Python;
-  - bot Python -> servidor Java;
-  - login, criação e listagem;
-  - canal duplicado, nomes inválidos, operação desconhecida e Protobuf inválido;
-  - repetição do mesmo ID sem duplicar login no mesmo servidor;
-  - rejeição de ID reutilizado com conteúdo diferente;
-  - leitura dos canais após encerrar e reiniciar o servidor;
-  - execução da topologia com 9 processos: broker, quatro bots e quatro servidores;
-  - confirmação de requisições persistidas nos quatro bancos independentes.
-- YAML do Compose analisado: 9 serviços e 4 volumes exclusivos.
-
-## Limite da validação
-
-Docker não está disponível no ambiente de desenvolvimento utilizado. Portanto, os testes de integração rodaram como processos locais; não foram executados o build das imagens nem `docker compose up`. A dupla deve realizar essa verificação no Docker Desktop antes de entregar.
-
-Os testes são reproduzíveis por `python tests/integration.py`, depois de instalar as dependências, gerar o contrato Python e empacotar o Java conforme o README. Os bancos usados nos testes são temporários e são removidos ao final.
+Para reproduzir a integração local, gere as classes Protobuf para Python, empacote o Java e execute `python tests/integration.py`, conforme o README.

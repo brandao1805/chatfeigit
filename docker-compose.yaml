@@ -6,13 +6,19 @@ services:
       dockerfile: python/Dockerfile
     command: [broker]
     init: true
+  pubsub:
+    build:
+      context: .
+      dockerfile: python/Dockerfile
+    command: [pubsub]
+    init: true
   python-server-1:
     build:
       context: .
       dockerfile: python/Dockerfile
     command: [server]
     init: true
-    depends_on: [broker]
+    depends_on: [broker, pubsub]
     environment:
       NODE_ID: python-server-1
     volumes:
@@ -23,7 +29,7 @@ services:
       dockerfile: python/Dockerfile
     command: [server]
     init: true
-    depends_on: [broker]
+    depends_on: [broker, pubsub]
     environment:
       NODE_ID: python-server-2
     volumes:
@@ -34,7 +40,7 @@ services:
       dockerfile: python/Dockerfile
     command: [bot]
     init: true
-    depends_on: [broker]
+    depends_on: [broker, pubsub]
     environment:
       NODE_ID: python-bot-1
   python-bot-2:
@@ -43,7 +49,7 @@ services:
       dockerfile: python/Dockerfile
     command: [bot]
     init: true
-    depends_on: [broker]
+    depends_on: [broker, pubsub]
     environment:
       NODE_ID: python-bot-2
   java-server-1:
@@ -52,7 +58,7 @@ services:
       dockerfile: java/Dockerfile
     command: [server]
     init: true
-    depends_on: [broker]
+    depends_on: [broker, pubsub]
     environment:
       NODE_ID: java-server-1
     volumes:
@@ -63,7 +69,7 @@ services:
       dockerfile: java/Dockerfile
     command: [server]
     init: true
-    depends_on: [broker]
+    depends_on: [broker, pubsub]
     environment:
       NODE_ID: java-server-2
     volumes:
@@ -74,7 +80,7 @@ services:
       dockerfile: java/Dockerfile
     command: [bot]
     init: true
-    depends_on: [broker]
+    depends_on: [broker, pubsub]
     environment:
       NODE_ID: java-bot-1
   java-bot-2:
@@ -83,7 +89,7 @@ services:
       dockerfile: java/Dockerfile
     command: [bot]
     init: true
-    depends_on: [broker]
+    depends_on: [broker, pubsub]
     environment:
       NODE_ID: java-bot-2
 volumes:
