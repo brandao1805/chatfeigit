@@ -14,4 +14,10 @@ message Envelope {
  repeated string channels = 8;
  string server_id = 9;
  string body = 10;
+ int64 logical_clock = 11;
+ int32 rank = 12;
+ repeated ServerInfo servers = 13;
 }
+
+
+message ServerInfo { string name = 1; int32 rank = 2; }

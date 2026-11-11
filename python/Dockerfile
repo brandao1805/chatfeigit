@@ -7,3 +7,4 @@ RUN python -m grpc_tools.protoc -I/proto --python_out=/app /proto/chat.proto
 COPY python/app.py .
 ENV PYTHONUNBUFFERED=1
 ENTRYPOINT ["python", "app.py"]
+

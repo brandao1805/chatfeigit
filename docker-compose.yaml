@@ -1,5 +1,14 @@
 name: chatfei
 services:
+  reference:
+    build:
+      context: .
+      dockerfile: python/Dockerfile
+    command: [reference]
+    init: true
+    environment:
+      NODE_ID: reference
+      REFERENCE_TTL_SECONDS: "60"
   broker:
     build:
       context: .
@@ -18,7 +27,7 @@ services:
       dockerfile: python/Dockerfile
     command: [server]
     init: true
-    depends_on: [broker, pubsub]
+    depends_on: [broker, pubsub, reference]
     environment:
       NODE_ID: python-server-1
     volumes:
@@ -29,7 +38,7 @@ services:
       dockerfile: python/Dockerfile
     command: [server]
     init: true
-    depends_on: [broker, pubsub]
+    depends_on: [broker, pubsub, reference]
     environment:
       NODE_ID: python-server-2
     volumes:
@@ -58,7 +67,7 @@ services:
       dockerfile: java/Dockerfile
     command: [server]
     init: true
-    depends_on: [broker, pubsub]
+    depends_on: [broker, pubsub, reference]
     environment:
       NODE_ID: java-server-1
     volumes:
@@ -69,7 +78,7 @@ services:
       dockerfile: java/Dockerfile
     command: [server]
     init: true
-    depends_on: [broker, pubsub]
+    depends_on: [broker, pubsub, reference]
     environment:
       NODE_ID: java-server-2
     volumes:
@@ -97,3 +106,4 @@ volumes:
   python-server-2-data:
   java-server-1-data:
   java-server-2-data:
+

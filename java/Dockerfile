@@ -7,3 +7,4 @@ FROM eclipse-temurin:17-jre
 WORKDIR /app
 COPY --from=build /build/java/target/chatfei-1.0.0.jar /app/chatfei.jar
 ENTRYPOINT ["java", "-jar", "/app/chatfei.jar"]
+

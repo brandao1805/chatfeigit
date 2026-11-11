@@ -19,7 +19,41 @@ import org.zeromq.*;
 public class Main {
     static String env(String name, String fallback) { return System.getenv().getOrDefault(name, fallback); }
     static final String NODE = env("NODE_ID", "java");
-    static long now() { return System.currentTimeMillis(); }
+    static long clock = 0, offset = 0;
+    static long now() { return System.currentTimeMillis() + offset; }
+    static Envelope sending(Envelope m) {
+        return m.toBuilder().setLogicalClock(++clock).setTimestampMs(now()).build();
+    }
+    static void received(Envelope m) { clock = Math.max(clock, m.getLogicalClock()); }
+    static Envelope identity(Envelope m) {
+        return m.toBuilder().clearTimestampMs().clearLogicalClock().build();
+    }
+    static Envelope referenceCall(ZContext ctx, String operation) throws Exception {
+        ZMQ.Socket sock = ctx.createSocket(SocketType.REQ);
+        sock.setLinger(0); sock.setReceiveTimeOut(2000);
+        try {
+            sock.connect(env("REFERENCE_ENDPOINT", "tcp://reference:5559"));
+            Envelope q = sending(Envelope.newBuilder().setRequestId(UUID.randomUUID().toString())
+                .setOperation(operation).setServerId(NODE).build());
+            log("REF SEND", q);
+            long start = System.nanoTime();
+            sock.send(q.toByteArray(), 0);
+            byte[] raw = sock.recv(0);
+            if (raw == null) {
+                System.out.println("["+NODE+"] referência indisponível; tentará novamente");
+                return null;
+            }
+            Envelope r = Envelope.parseFrom(raw);
+            received(r); log("REF RECV", r);
+            if (!r.getRequestId().equals(q.getRequestId()) || !r.getStatus().equals("OK")) return null;
+            if (operation.equals("REGISTER") || operation.equals("HEARTBEAT")) {
+                long rtt = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+                offset = r.getTimestampMs() + rtt / 2 - System.currentTimeMillis();
+                System.out.println("["+NODE+"] CLOCK_SYNC rank="+r.getRank()+" offset_ms="+offset);
+            }
+            return r;
+        } finally { ctx.destroySocket(sock); }
+    }
     static void log(String direction, Envelope message) {
         System.out.println("[" + NODE + "] " + direction + " " + message.toString().replace("\n", " | "));
     }
@@ -48,7 +82,7 @@ public class Main {
             s.setString(1,q.getRequestId());
             try(var rows = s.executeQuery()) {
                 if(rows.next()) {
-                    if(!Envelope.parseFrom(rows.getBytes(1)).equals(q))
+                    if(!identity(Envelope.parseFrom(rows.getBytes(1))).equals(identity(q)))
                         return new Result(r.setStatus("ID_CONFLICT").setDetail("request_id reutilizado com conteúdo diferente").build(), null);
                     return new Result(Envelope.parseFrom(rows.getBytes(2)), null);
                 }
@@ -117,6 +151,9 @@ public class Main {
     }
     static void server() throws Exception {
         try(Connection db=database();ZContext ctx=new ZContext()) {
+            while (referenceCall(ctx, "REGISTER") == null) Thread.sleep(1000);
+            referenceCall(ctx, "LIST_SERVERS");
+            long count = 0;
             ZMQ.Socket publisher = ctx.createSocket(SocketType.PUB);
             publisher.setLinger(0);
             publisher.connect(env("PUB_ENDPOINT", "tcp://pubsub:5557"));
@@ -126,11 +163,13 @@ public class Main {
             System.out.println("["+NODE+"] servidor pronto");
             while(!Thread.currentThread().isInterrupted()) {
                 byte[] raw=socket.recv(0);if(raw==null) break;
+                count++;
                 Envelope reply;
                 Envelope q = null;
                 Envelope publication = null;
                 try {
                     q = Envelope.parseFrom(raw);
+                    received(q);
                     log("RECV", q);
                     Result result = handle(db, q);
                     reply = result.reply();
@@ -143,13 +182,15 @@ public class Main {
                     reply=Envelope.newBuilder().setRequestId(q==null?"":q.getRequestId()).setTimestampMs(now()).setServerId(NODE).setStatus("STORAGE_ERROR").setDetail(e.getMessage()).build();
                 }
                 if (publication != null) {
+                    publication = sending(publication);
                     publisher.sendMore(publication.getChannel());
                     publisher.send(publication.toByteArray(), 0);
                     log("PUB SEND", publication);
                 }
-                reply = reply.toBuilder().setTimestampMs(now()).build();
+                reply = sending(reply);
                 log("SEND", reply);
                 socket.send(reply.toByteArray(), 0);
+                if (count % 10 == 0) referenceCall(ctx, "HEARTBEAT");
             }
         }
     }
@@ -163,9 +204,9 @@ public class Main {
         while(true) {
             ZMQ.Socket s=ctx.createSocket(SocketType.REQ);s.setLinger(0);s.setReceiveTimeOut(3000);
             try {
-                s.connect(env("FRONTEND_ENDPOINT","tcp://broker:5555"));log("SEND",q);s.send(q.toByteArray(),0);
+                s.connect(env("FRONTEND_ENDPOINT","tcp://broker:5555"));q=sending(q);log("SEND",q);s.send(q.toByteArray(),0);
                 byte[] raw=s.recv(0);
-                if(raw!=null) { Envelope r=Envelope.parseFrom(raw);log("RECV",r);if(r.getRequestId().equals(q.getRequestId())) return r; }
+                if(raw!=null) { Envelope r=Envelope.parseFrom(raw);received(r);log("RECV",r);if(r.getRequestId().equals(q.getRequestId())) return r; }
             } finally { ctx.destroySocket(s); }
             System.out.println("["+NODE+"] timeout; repetindo operação "+q.getRequestId());Thread.sleep(1000);
         }
@@ -186,6 +227,7 @@ public class Main {
             try {
                 Envelope event = Envelope.parseFrom(payload);
                 if (event.getOperation().equals("PUBLICATION") && topic.equals(event.getChannel())) {
+                    received(event);
                     log("SUB RECV received_at_ms=" + receivedAt, event);
                 }
             } catch (InvalidProtocolBufferException ignored) {
@@ -242,3 +284,4 @@ public class Main {
         switch(args[0]) { case "server" -> server();case "bot" -> bot();default -> throw new IllegalArgumentException("Use server ou bot"); }
     }
 }
+

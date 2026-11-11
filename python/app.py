@@ -15,8 +15,94 @@ from chat_pb2 import Envelope
 NAME = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
 NODE = os.getenv("NODE_ID", "python")
 
+CLOCK = 0
+OFFSET = 0
+
 def now():
-    return time.time_ns() // 1_000_000
+    return time.time_ns() // 1_000_000 + OFFSET
+
+def sending(message):
+    global CLOCK
+    CLOCK += 1
+    message.logical_clock = CLOCK
+    message.timestamp_ms = now()
+    return message
+
+def received(message):
+    global CLOCK
+    CLOCK = max(CLOCK, message.logical_clock)
+
+def identity(message):
+    copy = Envelope()
+    copy.CopyFrom(message)
+    copy.ClearField("timestamp_ms")
+    copy.ClearField("logical_clock")
+    return copy
+
+def reference_call(ctx, operation):
+    global OFFSET
+    q = Envelope(request_id=str(uuid.uuid4()), operation=operation, server_id=NODE)
+    with ctx.socket(zmq.REQ) as sock:
+        sock.linger = 0
+        sock.connect(os.getenv("REFERENCE_ENDPOINT", "tcp://reference:5559"))
+        sending(q)
+        log("REF SEND", q)
+        start = time.monotonic_ns()
+        sock.send(q.SerializeToString())
+        if not sock.poll(2000):
+            print(f"[{NODE}] referência indisponível; tentará novamente", flush=True)
+            return None
+        r = Envelope.FromString(sock.recv())
+        received(r)
+        log("REF RECV", r)
+        if r.request_id != q.request_id or r.status != "OK":
+            return None
+        if operation in {"REGISTER", "HEARTBEAT"}:
+            rtt = (time.monotonic_ns() - start) // 1_000_000
+            OFFSET = r.timestamp_ms + rtt // 2 - time.time_ns() // 1_000_000
+            print(f"[{NODE}] CLOCK_SYNC rank={r.rank} offset_ms={OFFSET}", flush=True)
+        return r
+
+def reference():
+    # Ranks estáveis durante a vida do serviço; disponibilidade expira separadamente.
+    ranks, active = {}, {}
+    ttl = float(os.getenv("REFERENCE_TTL_SECONDS", "60"))
+    with zmq.Context() as ctx, ctx.socket(zmq.REP) as sock:
+        sock.linger = 0
+        sock.bind(os.getenv("REFERENCE_BIND", "tcp://*:5559"))
+        while True:
+            current = time.monotonic()
+            for name in list(active):
+                if current - active[name] >= ttl:
+                    del active[name]
+                    print(f"[reference] EXPIRED {name}", flush=True)
+            if not sock.poll(200):
+                continue
+            raw = sock.recv()
+            r = Envelope(server_id=NODE)
+            try:
+                q = Envelope.FromString(raw)
+                received(q)
+                log("REF RECV", q)
+                r.request_id, r.operation = q.request_id, q.operation
+                if not q.request_id or q.timestamp_ms <= 0 or not NAME.fullmatch(q.server_id):
+                    r.status = "INVALID_REQUEST"
+                elif q.operation in {"REGISTER", "HEARTBEAT"}:
+                    if q.server_id not in ranks:
+                        ranks[q.server_id] = len(ranks) + 1
+                    active[q.server_id] = time.monotonic()
+                    r.rank, r.status = ranks[q.server_id], "OK"
+                elif q.operation == "LIST_SERVERS":
+                    r.status = "OK"
+                    for name in sorted(active, key=lambda n: ranks[n]):
+                        r.servers.add(name=name, rank=ranks[name])
+                else:
+                    r.status = "UNKNOWN_OPERATION"
+            except DecodeError:
+                r.status = "INVALID_PROTOBUF"
+            sending(r)
+            log("REF SEND", r)
+            sock.send(r.SerializeToString())
 
 def log(direction, message):
     # Apenas o log é textual; no socket circula SerializeToString().
@@ -42,7 +128,7 @@ def handle(db, request):
     old = db.execute("SELECT request,response FROM requests WHERE request_id=?", (request.request_id,)).fetchone()
     if old:
         previous = Envelope.FromString(old[0])
-        if previous != request:
+        if identity(previous) != identity(request):
             reply.status, reply.detail = "ID_CONFLICT", "request_id reutilizado com conteúdo diferente"
             return reply, None
         cached = Envelope.FromString(old[1])
@@ -89,6 +175,10 @@ def handle(db, request):
 def server():
     db = database()
     with zmq.Context() as ctx:
+        while reference_call(ctx, "REGISTER") is None:
+            time.sleep(1)
+        reference_call(ctx, "LIST_SERVERS")
+        count = 0
         with ctx.socket(zmq.REP) as socket, ctx.socket(zmq.PUB) as publisher:
             publisher.linger = 0
             publisher.connect(os.getenv("PUB_ENDPOINT", "tcp://pubsub:5557"))
@@ -100,9 +190,11 @@ def server():
             print(f"[{NODE}] servidor pronto", flush=True)
             while True:
                 raw = socket.recv()
+                count += 1
                 publication = None
                 try:
                     request = Envelope.FromString(raw)
+                    received(request)
                     log("RECV", request)
                     reply, publication = handle(db, request)
                 except DecodeError:
@@ -112,11 +204,14 @@ def server():
                     db.rollback()
                     reply = Envelope(request_id=request.request_id, timestamp_ms=now(), server_id=NODE, status="STORAGE_ERROR", detail=str(error))
                 if publication is not None:
+                    sending(publication)
                     publisher.send_multipart([publication.channel.encode("ascii"), publication.SerializeToString()])
                     log("PUB SEND", publication)
-                reply.timestamp_ms = now()
+                sending(reply)
                 log("SEND", reply)
                 socket.send(reply.SerializeToString())
+                if count % 10 == 0:
+                    reference_call(ctx, "HEARTBEAT")
 
 def call(ctx, request):
     while True:
@@ -124,10 +219,12 @@ def call(ctx, request):
         with ctx.socket(zmq.REQ) as socket:
             socket.linger = 0
             socket.connect(os.getenv("FRONTEND_ENDPOINT", "tcp://broker:5555"))
+            sending(request)
             log("SEND", request)
             socket.send(request.SerializeToString())
             if socket.poll(3000):
                 reply = Envelope.FromString(socket.recv())
+                received(reply)
                 log("RECV", reply)
                 if reply.request_id == request.request_id:
                     return reply
@@ -148,6 +245,7 @@ def receive_for(subscriber, subscriptions, seconds):
         except DecodeError:
             continue
         if event.operation == "PUBLICATION" and event.channel.encode("utf-8") == frames[0]:
+            received(event)
             log(f"SUB RECV received_at_ms={received_at}", event)
 
 
@@ -209,6 +307,7 @@ def broker():
 
 if __name__ == "__main__":
     try:
-        {"broker": broker, "server": server, "bot": bot, "pubsub": pubsub}[sys.argv[1]]()
+        {"broker": broker, "server": server, "bot": bot, "pubsub": pubsub, "reference": reference}[sys.argv[1]]()
     except KeyboardInterrupt:
         pass
+
