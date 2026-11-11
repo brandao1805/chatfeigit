@@ -1,56 +1,21 @@
-# Validação — Parte 3
+# Validação da Parte 4
 
-Os testes usam sockets ZeroMQ reais, serialização Protobuf e bancos SQLite
-temporários. Não utilizam mocks dos servidores.
+Teste desta etapa: `python tests/parte4.py`, após gerar Protobuf e compilar Java.
+Verifica eleição pelo maior rank, comunicação de controle Python/Java,
+anúncio Pub/Sub, coleta de relógios, ajuste Berkeley e troca do coordenador
+após encerrar o servidor Java.
 
-## Como reproduzir
+Java compilado com ECJ no nível Java 17, usando o contrato e dependências
+existentes da Parte 3. Docker não está disponível neste ambiente; é necessário
+confirmar `docker compose up --build` no computador da dupla.
 
-Depois de instalar as dependências Python, gerar chat_pb2.py e compilar o Java
-com Maven (comandos no README):
+Os testes integration.py e parte3.py são históricos das etapas anteriores;
+a suíte indicada para esta entrega é parte4.py.
 
-```bash
-python tests/integration.py
-python tests/parte3.py
-```
-
-`integration.py` verifica login, canais, erros, deduplicação, publicações,
-persistência após reiniciar, bots Python com servidor Java e bots Java com
-servidor Python. Também inicia a topologia de onze processos: referência,
-broker, proxy, quatro servidores e quatro bots, com quatro bancos separados.
-
-`parte3.py` verifica cadastro sem duplicação, ranks distintos, listagem,
-expiração, reativação preservando rank, contador lógico nas respostas,
-sincronização física, heartbeat no décimo recebimento, retransmissões com novos
-contadores e rejeição de reutilização de ID com conteúdo diferente.
-
-## Ambiente e limites
-
-Validação local em Linux com Python 3.12 e runtime Java 21; fontes Java
-compiladas para nível Java 17 com Eclipse ECJ 3.39.0 e Protobuf 3.25.5,
-usando as versões de bibliotecas declaradas no pom.xml.
-A compilação Maven neste ambiente ficou bloqueada na resolução de plugins;
-por isso foi usada compilação direta para validar o código Java.
-Docker não está instalado neste ambiente. O build das imagens e a execução
-via Docker Compose precisam ser confirmados no computador da dupla:
-
-```bash
-docker compose up --build
-```
-
-A ausência de tráfego por mais de 60 segundos também expira um servidor, pois
-o heartbeat segue o critério por quantidade de mensagens exigido no enunciado.
-Os ranks são estáveis durante a execução da referência, não entre reinícios dela.
-
-## Resultado da execução em 10/11/2026
+## Resultado
 
 ```text
-PASS servidor python: erros, deduplicação, persistência e Pub/Sub com bot java
-PASS servidor java: erros, deduplicação, persistência e Pub/Sub com bot python
-PASS integração completa
-PASS topologia de 11 processos: referência, broker, proxy, 4 bots, 4 servidores e 4 bancos separados
-PASS referência: cadastro único, ranks, listagem, expiração e retorno
-PASS python: relógio lógico, sincronização física, heartbeat após 10 mensagens, retry e remoção
-PASS java: relógio lógico, sincronização física, heartbeat após 10 mensagens, retry e remoção
-PASS Parte 3 completa
-PASS Compose: 11 serviços, dependências e Dockerfiles (validação estática YAML)
+PASS eleição: Java (maior rank) coordenador, Python seguidor
+PASS Berkeley: coleta TIME, média, ADJUST e anúncio Pub/Sub entre linguagens
+PASS falha: Python assume após desligamento do coordenador Java
 ```
