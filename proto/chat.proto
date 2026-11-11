@@ -21,3 +21,13 @@ message Envelope {
 
 
 message ServerInfo { string name = 1; int32 rank = 2; }
+
+message ReplicaRow {
+ string table = 1;
+ repeated string values = 2;
+}
+message ReplicaBatch {
+ repeated ReplicaRow rows = 1;
+ string next_key = 2;
+ bool more = 3;
+}

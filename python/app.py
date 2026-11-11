@@ -1,5 +1,7 @@
 """ChatFEI: Request-Reply, Publish-Subscribe e persistência."""
 import os
+import base64
+import threading
 import random
 import re
 import sqlite3
@@ -10,11 +12,12 @@ from pathlib import Path
 import zmq
 from google.protobuf.message import DecodeError
 from google.protobuf.json_format import MessageToDict
-from chat_pb2 import Envelope
+from chat_pb2 import Envelope, ReplicaRow, ReplicaBatch
 
 NAME = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
 NODE = os.getenv("NODE_ID", "python")
 
+CLOCK_LOCK = threading.RLock()
 CLOCK = 0
 OFFSET = 0
 
@@ -23,14 +26,16 @@ def now():
 
 def sending(message):
     global CLOCK
-    CLOCK += 1
-    message.logical_clock = CLOCK
+    with CLOCK_LOCK:
+        CLOCK += 1
+        message.logical_clock = CLOCK
     message.timestamp_ms = now()
     return message
 
 def received(message):
     global CLOCK
-    CLOCK = max(CLOCK, message.logical_clock)
+    with CLOCK_LOCK:
+        CLOCK = max(CLOCK, message.logical_clock)
 
 def identity(message):
     copy = Envelope()
@@ -57,10 +62,6 @@ def reference_call(ctx, operation):
         log("REF RECV", r)
         if r.request_id != q.request_id or r.status != "OK":
             return None
-        if operation in {"REGISTER", "HEARTBEAT"}:
-            rtt = (time.monotonic_ns() - start) // 1_000_000
-            OFFSET = r.timestamp_ms + rtt // 2 - time.time_ns() // 1_000_000
-            print(f"[{NODE}] CLOCK_SYNC rank={r.rank} offset_ms={OFFSET}", flush=True)
         return r
 
 def reference():
@@ -111,7 +112,7 @@ def log(direction, message):
 def database():
     path = os.getenv("DB_PATH", "/data/chat.db")
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path)
+    db = sqlite3.connect(path, timeout=30)
     db.executescript("""
     CREATE TABLE IF NOT EXISTS logins(request_id TEXT PRIMARY KEY, username TEXT NOT NULL, timestamp_ms INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS channels(name TEXT PRIMARY KEY, creator TEXT NOT NULL, timestamp_ms INTEGER NOT NULL);
@@ -164,6 +165,15 @@ def handle(db, request):
                            (request.request_id, request.channel, request.username,
                             publication.timestamp_ms, request.body))
                 reply.status, reply.detail = "OK", "Publicação registrada"
+        elif request.operation == "HISTORY":
+            records = db.execute("SELECT * FROM publications WHERE request_id > ? ORDER BY request_id LIMIT 129", (request.body,)).fetchall()
+            batch = ReplicaBatch(more=len(records) > 128)
+            for values in records[:128]:
+                batch.rows.append(ReplicaRow(table="publications", values=[str(value) for value in values]))
+            if batch.rows:
+                batch.next_key = batch.rows[-1].values[0]
+            reply.status = "OK"
+            reply.body = base64.b64encode(batch.SerializeToString()).decode()
         elif request.operation == "LIST_CHANNELS":
             reply.status = "OK"
             reply.channels.extend(row[0] for row in db.execute("SELECT name FROM channels ORDER BY name"))
@@ -178,7 +188,12 @@ def server():
         while reference_call(ctx, "REGISTER") is None:
             time.sleep(1)
         reference_call(ctx, "LIST_SERVERS")
+        import replication
+        replication.start(sys.modules[__name__])
+        import coordination
+        wake = coordination.start(sys.modules[__name__])
         count = 0
+        exchanged = 0
         with ctx.socket(zmq.REP) as socket, ctx.socket(zmq.PUB) as publisher:
             publisher.linger = 0
             publisher.connect(os.getenv("PUB_ENDPOINT", "tcp://pubsub:5557"))
@@ -191,6 +206,7 @@ def server():
             while True:
                 raw = socket.recv()
                 count += 1
+                exchanged += 1
                 publication = None
                 try:
                     request = Envelope.FromString(raw)
@@ -204,12 +220,17 @@ def server():
                     db.rollback()
                     reply = Envelope(request_id=request.request_id, timestamp_ms=now(), server_id=NODE, status="STORAGE_ERROR", detail=str(error))
                 if publication is not None:
+                    exchanged += 1
                     sending(publication)
                     publisher.send_multipart([publication.channel.encode("ascii"), publication.SerializeToString()])
                     log("PUB SEND", publication)
                 sending(reply)
                 log("SEND", reply)
                 socket.send(reply.SerializeToString())
+                exchanged += 1
+                if exchanged >= 15:
+                    exchanged -= 15
+                    wake.set()
                 if count % 10 == 0:
                     reference_call(ctx, "HEARTBEAT")
 

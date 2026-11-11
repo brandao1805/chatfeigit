@@ -19,12 +19,13 @@ import org.zeromq.*;
 public class Main {
     static String env(String name, String fallback) { return System.getenv().getOrDefault(name, fallback); }
     static final String NODE = env("NODE_ID", "java");
-    static long clock = 0, offset = 0;
+    static long clock = 0;
+    static volatile long offset = 0;
     static long now() { return System.currentTimeMillis() + offset; }
-    static Envelope sending(Envelope m) {
+    static synchronized Envelope sending(Envelope m) {
         return m.toBuilder().setLogicalClock(++clock).setTimestampMs(now()).build();
     }
-    static void received(Envelope m) { clock = Math.max(clock, m.getLogicalClock()); }
+    static synchronized void received(Envelope m) { clock = Math.max(clock, m.getLogicalClock()); }
     static Envelope identity(Envelope m) {
         return m.toBuilder().clearTimestampMs().clearLogicalClock().build();
     }
@@ -46,11 +47,6 @@ public class Main {
             Envelope r = Envelope.parseFrom(raw);
             received(r); log("REF RECV", r);
             if (!r.getRequestId().equals(q.getRequestId()) || !r.getStatus().equals("OK")) return null;
-            if (operation.equals("REGISTER") || operation.equals("HEARTBEAT")) {
-                long rtt = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
-                offset = r.getTimestampMs() + rtt / 2 - System.currentTimeMillis();
-                System.out.println("["+NODE+"] CLOCK_SYNC rank="+r.getRank()+" offset_ms="+offset);
-            }
             return r;
         } finally { ctx.destroySocket(sock); }
     }
@@ -63,6 +59,7 @@ public class Main {
         Files.createDirectories(path.getParent());
         Connection db = DriverManager.getConnection("jdbc:sqlite:" + path);
         try (Statement s = db.createStatement()) {
+            s.execute("PRAGMA busy_timeout=30000");
             s.execute("CREATE TABLE IF NOT EXISTS logins(request_id TEXT PRIMARY KEY, username TEXT NOT NULL, timestamp_ms INTEGER NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS channels(name TEXT PRIMARY KEY, creator TEXT NOT NULL, timestamp_ms INTEGER NOT NULL)");
             s.execute("CREATE TABLE IF NOT EXISTS publications(request_id TEXT PRIMARY KEY, channel TEXT NOT NULL, username TEXT NOT NULL, timestamp_ms INTEGER NOT NULL, body TEXT NOT NULL)");
@@ -132,6 +129,14 @@ public class Main {
                         r.setStatus("OK").setDetail("Publicação registrada");
                     }
                 }
+                case "HISTORY" -> {
+                    try {
+                        var batch = Replication.export(db, "publications", q.getBody());
+                        r.setStatus("OK").setBody(java.util.Base64.getEncoder().encodeToString(batch.toByteArray()));
+                    } catch (Exception error) {
+                        throw new SQLException("Erro ao consultar histórico", error);
+                    }
+                }
                 case "LIST_CHANNELS" -> {
                     r.setStatus("OK");
                     try(var s=db.createStatement();var rows=s.executeQuery("SELECT name FROM channels ORDER BY name")) {
@@ -153,7 +158,9 @@ public class Main {
         try(Connection db=database();ZContext ctx=new ZContext()) {
             while (referenceCall(ctx, "REGISTER") == null) Thread.sleep(1000);
             referenceCall(ctx, "LIST_SERVERS");
-            long count = 0;
+            Replication.start();
+            Coordination.start();
+            long count = 0, exchanged = 0;
             ZMQ.Socket publisher = ctx.createSocket(SocketType.PUB);
             publisher.setLinger(0);
             publisher.connect(env("PUB_ENDPOINT", "tcp://pubsub:5557"));
@@ -163,7 +170,7 @@ public class Main {
             System.out.println("["+NODE+"] servidor pronto");
             while(!Thread.currentThread().isInterrupted()) {
                 byte[] raw=socket.recv(0);if(raw==null) break;
-                count++;
+                count++; exchanged++;
                 Envelope reply;
                 Envelope q = null;
                 Envelope publication = null;
@@ -182,6 +189,7 @@ public class Main {
                     reply=Envelope.newBuilder().setRequestId(q==null?"":q.getRequestId()).setTimestampMs(now()).setServerId(NODE).setStatus("STORAGE_ERROR").setDetail(e.getMessage()).build();
                 }
                 if (publication != null) {
+                    exchanged++;
                     publication = sending(publication);
                     publisher.sendMore(publication.getChannel());
                     publisher.send(publication.toByteArray(), 0);
@@ -190,6 +198,8 @@ public class Main {
                 reply = sending(reply);
                 log("SEND", reply);
                 socket.send(reply.toByteArray(), 0);
+                exchanged++;
+                if (exchanged >= 15) {exchanged -= 15; Coordination.wake.set(true);}
                 if (count % 10 == 0) referenceCall(ctx, "HEARTBEAT");
             }
         }

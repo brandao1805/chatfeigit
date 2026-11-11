@@ -1,56 +1,29 @@
-# Validação — Parte 3
+# Validação da Parte 5
 
-Os testes usam sockets ZeroMQ reais, serialização Protobuf e bancos SQLite
-temporários. Não utilizam mocks dos servidores.
+Os testes usam processos Python e Java reais, sockets ZeroMQ, Protobuf e bancos
+SQLite temporários separados. A suíte parte5.py compara todas as linhas das
+quatro tabelas em quatro réplicas, com 160 publicações para exigir paginação.
+Depois encerra um servidor Java, produz mais vinte mensagens, remove apenas
+o banco temporário desse servidor e inicia novamente, verificando recuperação
+e consulta paginada do histórico completo em todos os servidores.
 
-## Como reproduzir
+A suíte parte4.py verifica eleição, Berkeley e troca de coordenador com a
+replicação habilitada. Para reproduzir, siga a preparação local do README.
 
-Depois de instalar as dependências Python, gerar chat_pb2.py e compilar o Java
-com Maven (comandos no README):
+Java compilado para nível Java 17 com Eclipse ECJ 3.39.0, Protobuf 3.25.5 e
+as dependências declaradas no pom.xml. A execução local usa o runtime Java
+instalado. Docker não está disponível neste ambiente. O build Maven dentro
+da imagem e a execução Docker Compose devem ser confirmados no computador
+da dupla com `docker compose up --build`.
 
-```bash
-python tests/integration.py
-python tests/parte3.py
-```
-
-`integration.py` verifica login, canais, erros, deduplicação, publicações,
-persistência após reiniciar, bots Python com servidor Java e bots Java com
-servidor Python. Também inicia a topologia de onze processos: referência,
-broker, proxy, quatro servidores e quatro bots, com quatro bancos separados.
-
-`parte3.py` verifica cadastro sem duplicação, ranks distintos, listagem,
-expiração, reativação preservando rank, contador lógico nas respostas,
-sincronização física, heartbeat no décimo recebimento, retransmissões com novos
-contadores e rejeição de reutilização de ID com conteúdo diferente.
-
-## Ambiente e limites
-
-Validação local em Linux com Python 3.12 e runtime Java 21; fontes Java
-compiladas para nível Java 17 com Eclipse ECJ 3.39.0 e Protobuf 3.25.5,
-usando as versões de bibliotecas declaradas no pom.xml.
-A compilação Maven neste ambiente ficou bloqueada na resolução de plugins;
-por isso foi usada compilação direta para validar o código Java.
-Docker não está instalado neste ambiente. O build das imagens e a execução
-via Docker Compose precisam ser confirmados no computador da dupla:
-
-```bash
-docker compose up --build
-```
-
-A ausência de tráfego por mais de 60 segundos também expira um servidor, pois
-o heartbeat segue o critério por quantidade de mensagens exigido no enunciado.
-Os ranks são estáveis durante a execução da referência, não entre reinícios dela.
-
-## Resultado da execução em 10/11/2026
+## Resultados
 
 ```text
-PASS servidor python: erros, deduplicação, persistência e Pub/Sub com bot java
-PASS servidor java: erros, deduplicação, persistência e Pub/Sub com bot python
-PASS integração completa
-PASS topologia de 11 processos: referência, broker, proxy, 4 bots, 4 servidores e 4 bancos separados
-PASS referência: cadastro único, ranks, listagem, expiração e retorno
-PASS python: relógio lógico, sincronização física, heartbeat após 10 mensagens, retry e remoção
-PASS java: relógio lógico, sincronização física, heartbeat após 10 mensagens, retry e remoção
-PASS Parte 3 completa
-PASS Compose: 11 serviços, dependências e Dockerfiles (validação estática YAML)
+PASS quatro réplicas iguais: logins, canais, requisições e 160 publicações paginadas
+PASS consulta paginada do histórico completo nas quatro réplicas
+PASS recuperação de banco vazio e mensagens produzidas durante a indisponibilidade
+PASS eleição: Java (maior rank) coordenador, Python seguidor
+PASS Berkeley: coleta TIME, média, ADJUST e anúncio Pub/Sub entre linguagens
+PASS falha: Python assume após desligamento do coordenador Java
+PASS sintaxe Python e estrutura YAML com onze serviços
 ```
