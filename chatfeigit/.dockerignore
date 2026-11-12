@@ -1,6 +1,0 @@
-.git
-**/__pycache__
-**/target
-**/*.db
-.venv
-
