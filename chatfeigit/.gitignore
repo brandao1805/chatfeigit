@@ -1,0 +1,10 @@
+.DS_Store
+/java/target/
+*.class
+__pycache__/
+*.pyc
+*.db
+*.db-*
+.venv/
+/python/chat_pb2.py
+

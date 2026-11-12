@@ -1,0 +1,7 @@
+# Bindings ZeroMQ usados pelos sockets REQ/REP, PUB/SUB e pelos proxies.
+pyzmq==26.2.0
+# Biblioteca que serializa e interpreta os envelopes binários.
+protobuf==5.28.3
+# Compilador que gera chat_pb2.py a partir de proto/chat.proto na imagem.
+grpcio-tools==1.68.1
+
