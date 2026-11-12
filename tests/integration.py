@@ -10,18 +10,22 @@ import time
 import uuid
 import zmq
 ROOT = Path(__file__).resolve().parents[1]
+# Faz a geração Protobuf criada pelo projeto ficar importável pelo teste.
 sys.path.insert(0, str(ROOT / 'python'))
 from chat_pb2 import Envelope
 
 def port():
+    # Pede uma porta livre ao sistema para evitar conflito com serviços locais.
     with socket.socket() as s:
         s.bind(('127.0.0.1', 0))
         return s.getsockname()[1]
 
 def command(lang, role):
+    # Usa o processo Python diretamente ou o JAR compilado para a versão Java.
     return [sys.executable, str(ROOT/'python/app.py'), role] if lang=='python' else ['java','-jar',str(ROOT/'java/target/chatfei-1.0.0.jar'),role]
 
 with tempfile.TemporaryDirectory() as tmp, zmq.Context() as ctx:
+    # Primeiro testa cada implementação com o mesmo contrato e um banco isolado.
     for lang in ['python','java']:
         endpoint=f'tcp://127.0.0.1:{port()}'
         db=str(Path(tmp)/f'{lang}.db')
@@ -34,13 +38,16 @@ with tempfile.TemporaryDirectory() as tmp, zmq.Context() as ctx:
         processes=[]
         with open(Path(tmp)/f'{lang}.log','w+') as log:
             def start():
+                # Reiniciar o servidor mantendo o arquivo SQLite verifica persistência em disco.
                 p=subprocess.Popen(command(lang,'server'),env=env,stdout=log,stderr=log);processes.append(p);return p
             def rpc(q):
+                # Cliente de teste envia envelopes Protobuf e aguarda uma única resposta.
                 with ctx.socket(zmq.REQ) as s:
                     s.linger=0;s.connect(endpoint);s.send(q if isinstance(q,bytes) else q.SerializeToString())
                     assert s.poll(15000),f'Timeout no servidor {lang}'
                     return Envelope.FromString(s.recv())
             def msg(op,channel='',user='teste'):
+                # Gera operações válidas com IDs únicos, como faria um bot real.
                 return Envelope(request_id=str(uuid.uuid4()),timestamp_ms=int(time.time()*1000),operation=op,username=user,channel=channel)
             try:
                 processes.append(subprocess.Popen(command('python', 'reference'),
@@ -50,6 +57,7 @@ with tempfile.TemporaryDirectory() as tmp, zmq.Context() as ctx:
                 processes.append(subprocess.Popen(command('python', 'pubsub'), env=proxy_env, stdout=log, stderr=log))
                 p=start()
                 login=msg('LOGIN');assert rpc(login).status=='OK';assert rpc(login).status=='OK'
+                # Repetir o mesmo UUID deve ser idempotente; mudar conteúdo com o mesmo UUID é conflito.
                 conflict=Envelope();conflict.CopyFrom(login);conflict.username='outro';assert rpc(conflict).status=='ID_CONFLICT'
                 assert rpc(msg('CREATE_CHANNEL','geral')).status=='OK'
                 assert rpc(msg('CREATE_CHANNEL','geral')).status=='ALREADY_EXISTS'
@@ -67,6 +75,7 @@ with tempfile.TemporaryDirectory() as tmp, zmq.Context() as ctx:
                 assert rpc(publication).status == 'OK'
                 assert rpc(publication).status == 'OK'
                 p.terminate();p.wait(timeout=5);p=start()
+                # Após reiniciar, o login e a publicação devem continuar no banco persistido.
                 with sqlite3.connect(db) as conn:
                     rows = conn.execute('SELECT channel, username, timestamp_ms, body FROM publications').fetchall()
                 assert len(rows) == 1
@@ -76,6 +85,7 @@ with tempfile.TemporaryDirectory() as tmp, zmq.Context() as ctx:
                 assert rows[0][3] == publication.body
                 assert list(rpc(msg('LIST_CHANNELS')).channels)==['geral']
                 other='java' if lang=='python' else 'python'
+                # Executa o bot da outra linguagem para confirmar interoperabilidade Pub/Sub.
                 bot=subprocess.Popen(command(other,'bot'),env={**os.environ,'NODE_ID':f'{other}-bot','FRONTEND_ENDPOINT':endpoint,'SUB_ENDPOINT':pub_out},stdout=log,stderr=log);processes.append(bot)
                 deadline=time.monotonic()+15
                 found=False
@@ -105,7 +115,7 @@ with tempfile.TemporaryDirectory() as tmp, zmq.Context() as ctx:
                     except subprocess.TimeoutExpired:p.kill();p.wait()
 print('PASS integração completa')
 
-# Mesma topologia do Compose em processos locais.
+# Repete o teste com a topologia completa, mas sem exigir Docker para rodar a suíte.
 with tempfile.TemporaryDirectory() as tmp:
     front=f'tcp://127.0.0.1:{port()}'; back=f'tcp://127.0.0.1:{port()}'
     pub_in = f'tcp://127.0.0.1:{port()}'
@@ -113,6 +123,7 @@ with tempfile.TemporaryDirectory() as tmp:
     ref = f'tcp://127.0.0.1:{port()}'
     processes=[];logs=[]
     def launch(lang,role,node,extra):
+        # Mantém um log separado por processo para detectar travamentos e erros.
         log=open(Path(tmp)/(node+'.log'),'w+');logs.append(log)
         p=subprocess.Popen(command(lang,role),env={**os.environ,'NODE_ID':node,**extra},stdout=log,stderr=log)
         processes.append(p)
@@ -124,6 +135,7 @@ with tempfile.TemporaryDirectory() as tmp:
                                                 'XPUB_BIND': pub_out.replace('127.0.0.1', '*')})
         for lang in ['python','java']:
             for i in [1,2]:
+                # Cada servidor recebe seu próprio banco e endpoint do broker.
                 node=f'{lang}-server-{i}'
                 launch(lang,'server',node,{'REFERENCE_ENDPOINT':ref,'BACKEND_ENDPOINT':back,'PUB_ENDPOINT':pub_in,'DB_PATH':str(Path(tmp)/(node+'.db'))})
         botlogs=[]
@@ -131,6 +143,7 @@ with tempfile.TemporaryDirectory() as tmp:
             for i in [1,2]:
                 botlogs.append(launch(lang,'bot',f'{lang}-bot-{i}',{'FRONTEND_ENDPOINT':front,'SUB_ENDPOINT':pub_out}))
         deadline=time.monotonic()+25
+        # A prontidão é inferida por atividade dos bots e gravações em todos os bancos.
         while time.monotonic()<deadline:
             ready=True
             for log in botlogs:

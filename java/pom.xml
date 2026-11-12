@@ -1,17 +1,89 @@
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
- <modelVersion>4.0.0</modelVersion><groupId>br.fei</groupId><artifactId>chatfei</artifactId><version>1.0.0</version>
- <properties><maven.compiler.release>17</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
- <dependencies>
-  <dependency><groupId>org.zeromq</groupId><artifactId>jeromq</artifactId><version>0.6.0</version></dependency>
-  <dependency><groupId>com.google.protobuf</groupId><artifactId>protobuf-java</artifactId><version>3.25.5</version></dependency>
-  <dependency><groupId>org.xerial</groupId><artifactId>sqlite-jdbc</artifactId><version>3.47.1.0</version></dependency>
-  <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-simple</artifactId><version>2.0.16</version></dependency>
- </dependencies>
- <build><extensions><extension><groupId>kr.motd.maven</groupId><artifactId>os-maven-plugin</artifactId><version>1.7.1</version></extension></extensions>
- <plugins>
-  <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version></plugin>
-  <plugin><groupId>org.xolstice.maven.plugins</groupId><artifactId>protobuf-maven-plugin</artifactId><version>0.6.1</version><configuration><protoSourceRoot>${project.basedir}/../proto</protoSourceRoot><protocArtifact>com.google.protobuf:protoc:3.25.5:exe:${os.detected.classifier}</protocArtifact></configuration><executions><execution><goals><goal>compile</goal></goals></execution></executions></plugin>
-  <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-shade-plugin</artifactId><version>3.6.0</version><executions><execution><phase>package</phase><goals><goal>shade</goal></goals><configuration><createDependencyReducedPom>false</createDependencyReducedPom><transformers><transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer"><mainClass>br.fei.chat.Main</mainClass></transformer><transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/></transformers><filters><filter><artifact>*:*</artifact><excludes><exclude>META-INF/*.SF</exclude><exclude>META-INF/*.RSA</exclude><exclude>META-INF/*.DSA</exclude><exclude>module-info.class</exclude></excludes></filter></filters></configuration></execution></executions></plugin>
- </plugins></build>
-</project>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>br.fei</groupId>
+    <artifactId>chatfei</artifactId>
+    <version>1.0.0</version>
 
+    <properties>
+        <!-- Garante os recursos da linguagem Java 17 e a codificação padrão UTF-8. -->
+        <maven.compiler.release>17</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <!-- JeroMQ implementa os sockets ZeroMQ usados por clientes e servidores Java. -->
+        <dependency>
+            <groupId>org.zeromq</groupId><artifactId>jeromq</artifactId><version>0.6.0</version>
+        </dependency>
+        <!-- Classes de runtime para codificar e decodificar chat.proto. -->
+        <dependency>
+            <groupId>com.google.protobuf</groupId><artifactId>protobuf-java</artifactId><version>3.25.5</version>
+        </dependency>
+        <!-- Driver JDBC que guarda o estado local de cada servidor em SQLite. -->
+        <dependency>
+            <groupId>org.xerial</groupId><artifactId>sqlite-jdbc</artifactId><version>3.47.1.0</version>
+        </dependency>
+        <!-- Logger requerido pelo JeroMQ sem acrescentar configuração externa. -->
+        <dependency>
+            <groupId>org.slf4j</groupId><artifactId>slf4j-simple</artifactId><version>2.0.16</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <extensions>
+            <!-- Descobre o classificador da plataforma para baixar o protoc correto. -->
+            <extension>
+                <groupId>kr.motd.maven</groupId><artifactId>os-maven-plugin</artifactId><version>1.7.1</version>
+            </extension>
+        </extensions>
+        <plugins>
+            <!-- Compila o código-fonte no nível Java definido acima. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version>
+            </plugin>
+            <!-- Gera Protocol.java a partir do schema compartilhado em ../proto. -->
+            <plugin>
+                <groupId>org.xolstice.maven.plugins</groupId><artifactId>protobuf-maven-plugin</artifactId><version>0.6.1</version>
+                <configuration>
+                    <protoSourceRoot>${project.basedir}/../proto</protoSourceRoot>
+                    <protocArtifact>com.google.protobuf:protoc:3.25.5:exe:${os.detected.classifier}</protocArtifact>
+                </configuration>
+                <executions><execution><goals><goal>compile</goal></goals></execution></executions>
+            </plugin>
+            <!-- Empacota aplicação e dependências em um único JAR executável pelo Dockerfile. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId><artifactId>maven-shade-plugin</artifactId><version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase><goals><goal>shade</goal></goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <transformers>
+                                <!-- Define a classe inicial usada por java -jar. -->
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>br.fei.chat.Main</mainClass>
+                                </transformer>
+                                <!-- Preserva descritores de serviços usados por bibliotecas empacotadas. -->
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                            <filters>
+                                <!-- Remove assinaturas e descritores de módulo que conflitam no JAR combinado. -->
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>module-info.class</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

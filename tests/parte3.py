@@ -9,27 +9,32 @@ import uuid
 from pathlib import Path
 import zmq
 ROOT = Path(__file__).resolve().parents[1]
+# Importa o mesmo schema gerado que a aplicação Python usa.
 sys.path.insert(0, str(ROOT / 'python'))
 from chat_pb2 import Envelope
 
 def address():
+    # Porta dinâmica evita dependência de portas fixas no computador do aluno.
     with socket.socket() as s:
         s.bind(('127.0.0.1', 0))
         return f'tcp://127.0.0.1:{s.getsockname()[1]}'
 
 def command(lang, role):
+    # Executa a variante escolhida com o papel de servidor ou serviço indicado.
     return ([sys.executable, str(ROOT/'python/app.py'), role] if lang == 'python'
             else ['java', '-jar', str(ROOT/'java/target/chatfei-1.0.0.jar'), role])
 
 with tempfile.TemporaryDirectory() as tmp, zmq.Context() as ctx:
     processes, logs = [], []
     def launch(lang, role, name, **extra):
+        # Armazena stdout/stderr por processo para facilitar diagnóstico em caso de falha.
         log = open(Path(tmp)/(name+'.log'), 'w+')
         logs.append(log)
         p = subprocess.Popen(command(lang, role), env={**os.environ, 'NODE_ID':name, **extra}, stdout=log, stderr=log)
         processes.append(p)
         return p
     def rpc(endpoint, operation, name='inspector', logical=1000, request=None):
+        # Verifica correlação da resposta, timestamp e avanço do relógio lógico.
         q = request or Envelope(request_id=str(uuid.uuid4()), timestamp_ms=int(time.time()*1000),
                                 logical_clock=logical, operation=operation, server_id=name, username='teste')
         with ctx.socket(zmq.REQ) as sock:
@@ -44,6 +49,7 @@ with tempfile.TemporaryDirectory() as tmp, zmq.Context() as ctx:
             return r
     try:
         ref=address()
+        # Começa pela referência isolada, usando TTL curto para testar expiração rapidamente.
         launch('python','reference','reference',REFERENCE_BIND=ref.replace("127.0.0.1", "*"),REFERENCE_TTL_SECONDS='3')
         a=rpc(ref,'REGISTER','alpha')
         assert a.rank > 0
@@ -56,11 +62,13 @@ with tempfile.TemporaryDirectory() as tmp, zmq.Context() as ctx:
         assert rpc(ref,'HEARTBEAT','alpha').rank==a.rank
         print('PASS referência: cadastro único, ranks, listagem, expiração e retorno')
         for lang in ('python','java'):
+            # Repete o mesmo cenário para comprovar paridade entre as duas linguagens.
             endpoint=address()
             node=lang+'-server'
             proc=launch(lang,'server',node,REFERENCE_ENDPOINT=ref,BIND_ENDPOINT=endpoint.replace("127.0.0.1", "*"),
                         PUB_ENDPOINT=address(),DB_PATH=str(Path(tmp)/(node+'.db')))
             for i in range(10):
+                # Dez pedidos de cliente devem disparar pelo menos um heartbeat.
                 r=rpc(endpoint,'LIST_CHANNELS', logical=2000+i*100)
                 assert r.status=='OK'
                 assert abs(r.timestamp_ms-int(time.time()*1000))<2000
@@ -77,6 +85,7 @@ with tempfile.TemporaryDirectory() as tmp, zmq.Context() as ctx:
             q.timestamp_ms+=1;q.logical_clock+=100
             assert rpc(endpoint,'LOGIN',request=q).status=='OK'
             q.username='outro'
+            # O servidor não deve aceitar reutilizar o UUID para um conteúdo diferente.
             assert rpc(endpoint,'LOGIN',request=q).status=='ID_CONFLICT'
             proc.terminate();proc.wait(timeout=5)
             time.sleep(3.3)

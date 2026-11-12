@@ -15,16 +15,21 @@ from google.protobuf.json_format import MessageToDict
 from chat_pb2 import Envelope, ReplicaRow, ReplicaBatch
 
 NAME = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
+# NODE identifica este processo nos logs e nas mensagens distribuídas.
 NODE = os.getenv("NODE_ID", "python")
 
+# O relógio lógico é compartilhado pelas threads; o lock protege leituras e incrementos.
 CLOCK_LOCK = threading.RLock()
 CLOCK = 0
+# OFFSET ajusta o horário percebido sem alterar o relógio do sistema operacional.
 OFFSET = 0
 
 def now():
+    # A aplicação troca timestamps em milissegundos; o offset vem do Berkeley.
     return time.time_ns() // 1_000_000 + OFFSET
 
 def sending(message):
+    # Toda saída recebe um contador lógico crescente e o horário local ajustado.
     global CLOCK
     with CLOCK_LOCK:
         CLOCK += 1
@@ -33,11 +38,13 @@ def sending(message):
     return message
 
 def received(message):
+    # Segue a regra do enunciado: o relógio local nunca fica menor que o recebido.
     global CLOCK
     with CLOCK_LOCK:
         CLOCK = max(CLOCK, message.logical_clock)
 
 def identity(message):
+    # Ao deduplicar, ignora apenas os campos de transporte que mudam em retries.
     copy = Envelope()
     copy.CopyFrom(message)
     copy.ClearField("timestamp_ms")
@@ -45,6 +52,7 @@ def identity(message):
     return copy
 
 def reference_call(ctx, operation):
+    # Canal de controle servidor-referência: cadastro, heartbeat ou lista de pares.
     global OFFSET
     q = Envelope(request_id=str(uuid.uuid4()), operation=operation, server_id=NODE)
     with ctx.socket(zmq.REQ) as sock:
@@ -72,6 +80,7 @@ def reference():
         sock.linger = 0
         sock.bind(os.getenv("REFERENCE_BIND", "tcp://*:5559"))
         while True:
+            # Heartbeats vencidos saem da lista de servidores considerados ativos.
             current = time.monotonic()
             for name in list(active):
                 if current - active[name] >= ttl:
@@ -89,11 +98,13 @@ def reference():
                 if not q.request_id or q.timestamp_ms <= 0 or not NAME.fullmatch(q.server_id):
                     r.status = "INVALID_REQUEST"
                 elif q.operation in {"REGISTER", "HEARTBEAT"}:
+                    # O primeiro cadastro recebe um rank; heartbeat apenas renova presença.
                     if q.server_id not in ranks:
                         ranks[q.server_id] = len(ranks) + 1
                     active[q.server_id] = time.monotonic()
                     r.rank, r.status = ranks[q.server_id], "OK"
                 elif q.operation == "LIST_SERVERS":
+                    # Um cliente interno recebe apenas os nomes/ranks ainda ativos.
                     r.status = "OK"
                     for name in sorted(active, key=lambda n: ranks[n]):
                         r.servers.add(name=name, rank=ranks[name])
@@ -110,6 +121,7 @@ def log(direction, message):
     print(f"[{NODE}] {direction} {MessageToDict(message, preserving_proto_field_name=True, always_print_fields_with_no_presence=True)}", flush=True)
 
 def database():
+    # O volume /data é exclusivo de cada servidor, portanto cada réplica tem seu SQLite.
     path = os.getenv("DB_PATH", "/data/chat.db")
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=30)
@@ -122,10 +134,12 @@ def database():
     return db
 
 def handle(db, request):
+    # Valida e executa uma operação de cliente dentro da transação do servidor.
     reply = Envelope(request_id=request.request_id, timestamp_ms=now(), operation=request.operation, server_id=NODE)
     if not request.request_id or request.timestamp_ms <= 0:
         reply.status, reply.detail = "INVALID_REQUEST", "request_id e timestamp_ms positivos são obrigatórios"
         return reply, None
+    # A tabela requests dá idempotência local quando o cliente reenvia o mesmo UUID.
     old = db.execute("SELECT request,response FROM requests WHERE request_id=?", (request.request_id,)).fetchone()
     if old:
         previous = Envelope.FromString(old[0])
@@ -136,6 +150,7 @@ def handle(db, request):
         cached.timestamp_ms = now()
         return cached, None
     publication = None
+    # O contexto commit/rollback mantém a operação e sua resposta juntas no disco.
     with db:
         if not NAME.fullmatch(request.username):
             reply.status, reply.detail = "INVALID_USER", "Use 1 a 32 letras ASCII, números, _ ou -"
@@ -150,6 +165,7 @@ def handle(db, request):
                 reply.status = "OK" if result.rowcount else "ALREADY_EXISTS"
                 reply.detail = "Canal criado" if result.rowcount else "Canal já existe neste servidor"
         elif request.operation == "PUBLISH":
+            # Publicação vira registro persistido e, após o commit, evento Pub/Sub.
             if not NAME.fullmatch(request.channel):
                 reply.status, reply.detail = "INVALID_CHANNEL", "Nome de canal inválido"
             elif not request.body.strip() or len(request.body.encode("utf-8")) > 4096:
@@ -166,6 +182,7 @@ def handle(db, request):
                             publication.timestamp_ms, request.body))
                 reply.status, reply.detail = "OK", "Publicação registrada"
         elif request.operation == "HISTORY":
+            # HISTORY usa o mesmo lote Protobuf paginado da replicação.
             records = db.execute("SELECT * FROM publications WHERE request_id > ? ORDER BY request_id LIMIT 129", (request.body,)).fetchall()
             batch = ReplicaBatch(more=len(records) > 128)
             for values in records[:128]:
@@ -183,6 +200,7 @@ def handle(db, request):
     return reply, publication
 
 def server():
+    # Inicializa dependências de controle antes de aceitar tráfego pelo broker.
     db = database()
     with zmq.Context() as ctx:
         while reference_call(ctx, "REGISTER") is None:
@@ -204,6 +222,7 @@ def server():
                 socket.connect(os.getenv("BACKEND_ENDPOINT", "tcp://broker:5556"))
             print(f"[{NODE}] servidor pronto", flush=True)
             while True:
+            # REP recebe uma requisição e precisa devolver exatamente uma resposta.
                 raw = socket.recv()
                 count += 1
                 exchanged += 1
@@ -220,6 +239,7 @@ def server():
                     db.rollback()
                     reply = Envelope(request_id=request.request_id, timestamp_ms=now(), server_id=NODE, status="STORAGE_ERROR", detail=str(error))
                 if publication is not None:
+                    # O evento Pub/Sub só é emitido depois que handle gravou a publicação.
                     exchanged += 1
                     sending(publication)
                     publisher.send_multipart([publication.channel.encode("ascii"), publication.SerializeToString()])
@@ -229,12 +249,15 @@ def server():
                 socket.send(reply.SerializeToString())
                 exchanged += 1
                 if exchanged >= 15:
+                    # Solicita sincronização Berkeley ao atingir o lote definido no enunciado.
                     exchanged -= 15
                     wake.set()
                 if count % 10 == 0:
+                    # Renova a presença na referência a cada dez requisições de clientes.
                     reference_call(ctx, "HEARTBEAT")
 
 def call(ctx, request):
+    # Cliente REQ: recria o socket a cada retry para preservar a alternância REQ/REP.
     while True:
         # Após timeout recriamos REQ para não violar sua alternância SEND/RECV.
         with ctx.socket(zmq.REQ) as socket:
@@ -253,12 +276,14 @@ def call(ctx, request):
         time.sleep(1)
 
 def receive_for(subscriber, subscriptions, seconds):
+    # Drena mensagens Pub/Sub durante um intervalo sem bloquear a publicação do bot.
     deadline = time.monotonic() + seconds
     while (remaining := deadline - time.monotonic()) > 0:
         if not subscriber.poll(max(1, int(remaining * 1000))):
             continue
         frames = subscriber.recv_multipart()
         received_at = now()
+        # O proxy usa o primeiro frame como tópico; o payload Protobuf vem no segundo.
         if len(frames) != 2 or frames[0] not in subscriptions:
             continue
         try:
@@ -271,6 +296,7 @@ def receive_for(subscriber, subscriptions, seconds):
 
 
 def bot():
+    # Bot determinístico: entra, completa canais/inscrições e publica em lotes de dez.
     with zmq.Context() as ctx, ctx.socket(zmq.SUB) as subscriber:
         subscriber.linger = 0
         subscriber.connect(os.getenv("SUB_ENDPOINT", "tcp://pubsub:5558"))
@@ -278,12 +304,14 @@ def bot():
         channels = set()
 
         def invoke(operation, channel="", body=""):
+            # Cada chamada nova ganha UUID próprio para deduplicação no servidor.
             return call(ctx, Envelope(request_id=str(uuid.uuid4()), timestamp_ms=now(),
                                       operation=operation, username=NODE, channel=channel, body=body))
 
         while invoke("LOGIN").status != "OK":
             time.sleep(1)
         while True:
+            # A lista pode mudar enquanto outros bots criam canais.
             listing = invoke("LIST_CHANNELS")
             if listing.status == "OK":
                 channels.update(listing.channels)
@@ -297,6 +325,7 @@ def bot():
                 continue
             available = sorted(name for name in channels if name.encode("ascii") not in subscriptions)
             if len(subscriptions) < 3 and available:
+                # A escolha aleatória espalha os assinantes pelos tópicos disponíveis.
                 topic = random.choice(available)
                 encoded = topic.encode("ascii")
                 subscriber.subscribe(encoded)
@@ -311,6 +340,7 @@ def bot():
 
 
 def pubsub():
+    # Proxy XSUB/XPUB: recebe publicações dos servidores e encaminha aos assinantes.
     with zmq.Context() as ctx, ctx.socket(zmq.XSUB) as xsub, ctx.socket(zmq.XPUB) as xpub:
         xsub.bind(os.getenv("XSUB_BIND", "tcp://*:5557"))
         xpub.bind(os.getenv("XPUB_BIND", "tcp://*:5558"))
@@ -319,6 +349,7 @@ def pubsub():
 
 
 def broker():
+    # Proxy ROUTER/DEALER: aceita clientes e distribui pedidos entre servidores REP.
     with zmq.Context() as ctx:
         with ctx.socket(zmq.ROUTER) as frontend, ctx.socket(zmq.DEALER) as backend:
             frontend.bind(os.getenv("BROKER_FRONTEND", "tcp://*:5555"))
@@ -327,6 +358,7 @@ def broker():
             zmq.proxy(frontend, backend)
 
 if __name__ == "__main__":
+    # O argumento do container escolhe qual dos quatro processos Python será executado.
     try:
         {"broker": broker, "server": server, "bot": bot, "pubsub": pubsub, "reference": reference}[sys.argv[1]]()
     except KeyboardInterrupt:

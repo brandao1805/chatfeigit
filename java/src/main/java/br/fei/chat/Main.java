@@ -17,19 +17,25 @@ import org.zeromq.*;
 
 /** Implementação Java do mesmo contrato usado pelo Python. */
 public class Main {
+    // A configuração do container substitui o valor padrão sem recompilar o programa.
     static String env(String name, String fallback) { return System.getenv().getOrDefault(name, fallback); }
     static final String NODE = env("NODE_ID", "java");
+    // O contador lógico e o ajuste de relógio são compartilhados por todas as threads Java.
     static long clock = 0;
     static volatile long offset = 0;
     static long now() { return System.currentTimeMillis() + offset; }
     static synchronized Envelope sending(Envelope m) {
+        // Toda mensagem de saída recebe um novo contador e o timestamp ajustado.
         return m.toBuilder().setLogicalClock(++clock).setTimestampMs(now()).build();
     }
+    // Regra de recepção definida no enunciado: avançar até o maior contador observado.
     static synchronized void received(Envelope m) { clock = Math.max(clock, m.getLogicalClock()); }
     static Envelope identity(Envelope m) {
+        // Compara a operação ignorando os campos de transporte que mudam em retransmissões.
         return m.toBuilder().clearTimestampMs().clearLogicalClock().build();
     }
     static Envelope referenceCall(ZContext ctx, String operation) throws Exception {
+        // Chamada síncrona ao serviço que registra servidores e mantém sua lista ativa.
         ZMQ.Socket sock = ctx.createSocket(SocketType.REQ);
         sock.setLinger(0); sock.setReceiveTimeOut(2000);
         try {
@@ -51,10 +57,12 @@ public class Main {
         } finally { ctx.destroySocket(sock); }
     }
     static void log(String direction, Envelope message) {
+        // A conversão para texto ocorre somente no terminal; no socket segue Protobuf binário.
         System.out.println("[" + NODE + "] " + direction + " " + message.toString().replace("\n", " | "));
     }
     static boolean valid(String name) { return name.matches("[A-Za-z0-9_-]{1,32}"); }
     static Connection database() throws Exception {
+        // Cada instância usa seu volume; busy_timeout dá tempo para terminar transações concorrentes.
         Path path = Path.of(env("DB_PATH", "/data/chat.db")).toAbsolutePath();
         Files.createDirectories(path.getParent());
         Connection db = DriverManager.getConnection("jdbc:sqlite:" + path);
@@ -70,11 +78,13 @@ public class Main {
     record Result(Envelope reply, Envelope publication) {}
 
     static Result handle(Connection db, Envelope q) throws SQLException, InvalidProtocolBufferException {
+        // Devolve a resposta REQ/REP e, separadamente, o evento que deve ser publicado no Pub/Sub.
         Envelope publication = null;
         var r = Envelope.newBuilder().setRequestId(q.getRequestId()).setTimestampMs(now())
             .setOperation(q.getOperation()).setServerId(NODE);
         if(q.getRequestId().isEmpty() || q.getTimestampMs() <= 0)
             return new Result(r.setStatus("INVALID_REQUEST").setDetail("request_id e timestamp_ms positivos são obrigatórios").build(), null);
+        // Requisições repetidas retornam o resultado salvo sem executar a operação de novo neste servidor.
         try(var s = db.prepareStatement("SELECT request,response FROM requests WHERE request_id=?")) {
             s.setString(1,q.getRequestId());
             try(var rows = s.executeQuery()) {
@@ -87,15 +97,18 @@ public class Main {
         }
         db.setAutoCommit(false);
         try {
+            // A transação inclui dados da operação e sua resposta idempotente.
             if(!valid(q.getUsername())) r.setStatus("INVALID_USER").setDetail("Use 1 a 32 letras ASCII, números, _ ou -");
             else switch(q.getOperation()) {
                 case "LOGIN" -> {
+                    // Registra identidade e timestamp de cada login aceito.
                     try(var s=db.prepareStatement("INSERT INTO logins VALUES (?,?,?)")) {
                         s.setString(1,q.getRequestId());s.setString(2,q.getUsername());s.setLong(3,q.getTimestampMs());s.executeUpdate();
                     }
                     r.setStatus("OK").setDetail("Login registrado");
                 }
                 case "CREATE_CHANNEL" -> {
+                    // A chave primária do canal impede que dois pedidos criem o mesmo nome localmente.
                     if(!valid(q.getChannel())) r.setStatus("INVALID_CHANNEL").setDetail("Nome de canal inválido");
                     else try(var s=db.prepareStatement("INSERT OR IGNORE INTO channels VALUES (?,?,?)")) {
                         s.setString(1,q.getChannel());s.setString(2,q.getUsername());s.setLong(3,q.getTimestampMs());
@@ -104,6 +117,7 @@ public class Main {
                     }
                 }
                 case "PUBLISH" -> {
+                    // Valida tamanho em bytes UTF-8 antes de guardar e publicar o conteúdo.
                     if (!valid(q.getChannel())) {
                         r.setStatus("INVALID_CHANNEL").setDetail("Nome de canal inválido");
                     } else if (q.getBody().isBlank() || q.getBodyBytes().size() > 4096) {
@@ -130,6 +144,7 @@ public class Main {
                     }
                 }
                 case "HISTORY" -> {
+                    // O cursor e o lote usam o mesmo formato da transferência entre réplicas.
                     try {
                         var batch = Replication.export(db, "publications", q.getBody());
                         r.setStatus("OK").setBody(java.util.Base64.getEncoder().encodeToString(batch.toByteArray()));
@@ -138,6 +153,7 @@ public class Main {
                     }
                 }
                 case "LIST_CHANNELS" -> {
+                    // A ordenação torna a resposta previsível para todos os bots.
                     r.setStatus("OK");
                     try(var s=db.createStatement();var rows=s.executeQuery("SELECT name FROM channels ORDER BY name")) {
                         while(rows.next()) r.addChannels(rows.getString(1));
@@ -151,10 +167,11 @@ public class Main {
             }
             db.commit();
             return new Result(reply, publication);
-        } catch(Exception e) { db.rollback();throw e; }
+        } catch(Exception e) { db.rollback();throw e; } // Erro parcial não deixa a operação gravada pela metade.
         finally { db.setAutoCommit(true); }
     }
     static void server() throws Exception {
+        // Registra o servidor antes de iniciar os serviços auxiliares e receber clientes.
         try(Connection db=database();ZContext ctx=new ZContext()) {
             while (referenceCall(ctx, "REGISTER") == null) Thread.sleep(1000);
             referenceCall(ctx, "LIST_SERVERS");
@@ -169,6 +186,7 @@ public class Main {
             if(bind!=null) socket.bind(bind);else socket.connect(env("BACKEND_ENDPOINT","tcp://broker:5556"));
             System.out.println("["+NODE+"] servidor pronto");
             while(!Thread.currentThread().isInterrupted()) {
+                // O socket REP processa um pedido e então devolve uma resposta ao broker.
                 byte[] raw=socket.recv(0);if(raw==null) break;
                 count++; exchanged++;
                 Envelope reply;
@@ -189,6 +207,7 @@ public class Main {
                     reply=Envelope.newBuilder().setRequestId(q==null?"":q.getRequestId()).setTimestampMs(now()).setServerId(NODE).setStatus("STORAGE_ERROR").setDetail(e.getMessage()).build();
                 }
                 if (publication != null) {
+                    // Só publica depois que handle confirmou o commit local no SQLite.
                     exchanged++;
                     publication = sending(publication);
                     publisher.sendMore(publication.getChannel());
@@ -199,7 +218,9 @@ public class Main {
                 log("SEND", reply);
                 socket.send(reply.toByteArray(), 0);
                 exchanged++;
-                if (exchanged >= 15) {exchanged -= 15; Coordination.wake.set(true);}
+                if (exchanged >= 15) { // Conta pedido, resposta e publicação como mensagens de aplicação.
+                    exchanged -= 15; Coordination.wake.set(true);
+                }
                 if (count % 10 == 0) referenceCall(ctx, "HEARTBEAT");
             }
         }
@@ -209,6 +230,7 @@ public class Main {
     }
 
     static Envelope invoke(ZContext ctx, String op, String channel, String body) throws Exception {
+        // Bot cliente com UUID estável durante retries para que o servidor reconheça retransmissões.
         Envelope q=Envelope.newBuilder().setRequestId(UUID.randomUUID().toString()).setTimestampMs(now())
             .setOperation(op).setUsername(NODE).setChannel(channel).setBody(body).build();
         while(true) {
@@ -222,6 +244,7 @@ public class Main {
         }
     }
     static void receiveForSecond(ZMQ.Socket subscriber, Set<String> subscriptions) {
+        // Lê publicações durante um segundo sem interromper o ciclo do bot.
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
         long remaining;
         while ((remaining = deadline - System.nanoTime()) > 0) {
@@ -233,6 +256,7 @@ public class Main {
             boolean extraFrames = subscriber.hasReceiveMore();
             while (subscriber.hasReceiveMore()) subscriber.recv(0);
             String topic = new String(topicFrame, StandardCharsets.US_ASCII);
+            // Valida estrutura, inscrição e igualdade do tópico para evitar aceitar prefixos do filtro ZMQ.
             if (extraFrames || payload == null || !subscriptions.contains(topic)) continue;
             try {
                 Envelope event = Envelope.parseFrom(payload);
@@ -247,6 +271,7 @@ public class Main {
     }
 
     static void bot() throws Exception {
+        // O bot não pede entrada humana: executa login, canais, inscrições e publicação continuamente.
         try (ZContext ctx = new ZContext()) {
             ZMQ.Socket subscriber = ctx.createSocket(SocketType.SUB);
             subscriber.setLinger(0);
@@ -257,6 +282,7 @@ public class Main {
             while (true) {
                 Envelope listing = invoke(ctx, "LIST_CHANNELS", "");
                 if (listing.getStatus().equals("OK")) {
+                    // Completa a lista de canais até o mínimo previsto no roteiro de testes.
                     channels.addAll(listing.getChannelsList());
                     if (channels.size() < 5) {
                         for (String candidate : List.of("geral", "estudos", "projetos", "avisos", "cafe")) {
@@ -273,6 +299,7 @@ public class Main {
                 }
                 List<String> available = channels.stream().filter(name -> !subscriptions.contains(name)).toList();
                 if (subscriptions.size() < 3 && !available.isEmpty()) {
+                    // Sorteia um canal ainda não inscrito, mantendo no máximo três inscrições.
                     String topic = available.get(ThreadLocalRandom.current().nextInt(available.size()));
                     subscriber.subscribe(topic.getBytes(StandardCharsets.US_ASCII));
                     subscriptions.add(topic);
@@ -291,6 +318,7 @@ public class Main {
     }
 
     public static void main(String[] args) throws Exception {
+        // O comando do Compose escolhe se este processo atua como bot ou servidor.
         switch(args[0]) { case "server" -> server();case "bot" -> bot();default -> throw new IllegalArgumentException("Use server ou bot"); }
     }
 }

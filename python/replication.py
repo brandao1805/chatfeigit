@@ -8,16 +8,20 @@ TABLES = {'logins': ['request_id','username','timestamp_ms'],
           'publications': ['request_id','channel','username','timestamp_ms','body']}
 
 def start(app):
+    # Converte SQLite em linhas protobuf sem depender do tipo interno do valor.
     def row(table, values):
         return ReplicaRow(table=table,values=[v.hex() if isinstance(v,bytes) else str(v) for v in values])
     def export(db, table, after):
+        # A chave after torna a leitura ordenada e permite continuar na próxima página.
         if table not in TABLES:raise ValueError('Tabela inválida')
+        # Lê 129 para saber se há mais de 128, embora só devolva 128 neste lote.
         records=db.execute(f'SELECT * FROM {table} WHERE {TABLES[table][0]} > ? ORDER BY {TABLES[table][0]} LIMIT 129',(after,)).fetchall()
         batch=ReplicaBatch(more=len(records)>128)
         for values in records[:128]:batch.rows.append(row(table,values))
         if batch.rows:batch.next_key=batch.rows[-1].values[0]
         return batch
     def merge(db,batch):
+        # Reaplica linhas de modo idempotente e desempata conflitos de forma determinística.
         count=0
         with db:
             db.execute("BEGIN IMMEDIATE")
@@ -26,6 +30,7 @@ def start(app):
                 if table not in TABLES or len(record.values)!=len(TABLES[table]):raise ValueError('Linha inválida')
                 values=list(record.values)
                 old=db.execute(f'SELECT * FROM {table} WHERE {TABLES[table][0]}=?',(values[0],)).fetchone()
+                # A comparação protobuf em hexadecimal escolhe a mesma versão em Python e Java.
                 if old and row(table,old).SerializeToString().hex()<=record.SerializeToString().hex():continue
                 if table=='requests':values[1:]=[bytes.fromhex(v) for v in values[1:]]
                 columns=TABLES[table]
@@ -34,6 +39,7 @@ def start(app):
                 count+=1
         if count:print(f'[{app.NODE}] REPLICA MERGED {count}',flush=True)
     def listen():
+        # Endpoint REP entrega páginas quando outro servidor puxa uma tabela.
         db=app.database()
         with zmq.Context() as ctx,ctx.socket(zmq.REP) as s:
             s.bind(os.getenv('REPLICA_BIND','tcp://*:5561'))
@@ -41,11 +47,13 @@ def start(app):
                 q=Envelope.FromString(s.recv());app.received(q);app.log("REPLICA RECV",q)
                 r=Envelope(request_id=q.request_id,operation='REPLICA',server_id=app.NODE)
                 try:
+                    # O corpo carrega a página protobuf em Base64 dentro do envelope comum.
                     batch=export(db,q.channel,q.body)
                     r.body=base64.b64encode(batch.SerializeToString()).decode();r.status='OK'
                 except Exception as e:r.status='ERROR';r.detail=str(e)
                 app.sending(r);app.log("REPLICA SEND",r);s.send(r.SerializeToString())
     def worker():
+        # Anti-entropia periódica: descobre pares ativos e copia seus registros persistidos.
         db=app.database()
         endpoints=dict(x.split('=',1) for x in os.getenv('REPLICA_ENDPOINTS','').split(',') if x)
         with zmq.Context() as ctx:
@@ -55,6 +63,7 @@ def start(app):
                     for peer in listing.servers if listing else []:
                         if peer.name==app.NODE:continue
                         for table in TABLES:
+                            # Cada tabela reinicia no começo para recuperar inserções fora do cursor.
                             after=''
                             while True:
                                 with ctx.socket(zmq.REQ) as s:

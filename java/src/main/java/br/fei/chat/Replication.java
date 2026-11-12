@@ -9,6 +9,7 @@ import org.zeromq.*;
 
 /** Réplica passiva por pull, com páginas de até 128 registros. */
 final class Replication {
+    // Mantém o nome e a ordem das colunas iguais nas implementações Python e Java.
     static final Map<String,List<String>> TABLES=Map.of(
         "logins",List.of("request_id","username","timestamp_ms"),
         "channels",List.of("name","creator","timestamp_ms"),
@@ -16,6 +17,7 @@ final class Replication {
         "publications",List.of("request_id","channel","username","timestamp_ms","body"));
 
     static ReplicaRow row(String table,ResultSet result) throws SQLException {
+        // BLOBs das requisições viram hexadecimal para caber no contrato de strings Protobuf.
         var record=ReplicaRow.newBuilder().setTable(table);
         for(int i=1;i<=TABLES.get(table).size();i++) {
             String value=table.equals("requests")&&i>1
@@ -25,6 +27,7 @@ final class Replication {
         return record.build();
     }
     static ReplicaBatch export(Connection db,String table,String after) throws Exception {
+        // Exporta uma página ordenada; 129 linhas permitem detectar se há continuação após 128.
         if(!TABLES.containsKey(table))throw new IllegalArgumentException("Tabela inválida");
         var batch=ReplicaBatch.newBuilder();
         String key=TABLES.get(table).get(0);
@@ -40,6 +43,7 @@ final class Replication {
         return batch.build();
     }
     static void merge(Connection db,ReplicaBatch batch) throws Exception {
+        // Importa registros sem reexecutar operações de usuário nem republicar mensagens.
         int count=0;
         // Uma transação curta por linha permite atender bots durante páginas grandes.
         for(var record:batch.getRowsList()) {
@@ -49,6 +53,7 @@ final class Replication {
             try(var begin=db.createStatement()){begin.execute("BEGIN IMMEDIATE");}
             try {
                 boolean replace=true;
+                // Para uma mesma chave, a comparação serializada escolhe a mesma versão em todas as réplicas.
                 try(var statement=db.prepareStatement("SELECT * FROM "+table+" WHERE "+columns.get(0)+"=?")) {
                     statement.setString(1,record.getValues(0));
                     try(var rows=statement.executeQuery()) {
@@ -56,6 +61,7 @@ final class Replication {
                     }
                 }
                 if(replace) {
+                    // SQL dinâmico usa apenas nomes definidos em TABLES; valores continuam parametrizados.
                     String placeholders=String.join(",",Collections.nCopies(columns.size(),"?"));
                     String updates=String.join(",",columns.subList(1,columns.size()).stream().map(c->c+"=excluded."+c).toList());
                     try(var statement=db.prepareStatement("INSERT INTO "+table+" VALUES ("+placeholders+") ON CONFLICT("+columns.get(0)+") DO UPDATE SET "+updates)) {
@@ -72,6 +78,7 @@ final class Replication {
         if(count>0)System.out.println("["+Main.NODE+"] REPLICA MERGED "+count);
     }
     static void start() {
+        // Listener atende pedidos de pull; worker consulta pares e mantém esta cópia atualizada.
         Thread listener=new Thread(()->{
             try(var db=Main.database();var ctx=new ZContext()) {
                 var socket=ctx.createSocket(SocketType.REP);socket.bind(Main.env("REPLICA_BIND","tcp://*:5561"));
@@ -84,6 +91,7 @@ final class Replication {
                 }
             } catch(Exception e){e.printStackTrace();}
         });listener.setDaemon(true);listener.start();
+        // O worker é independente do atendimento de clientes para que a cópia continue em segundo plano.
         Thread worker=new Thread(()->{
             Map<String,String> endpoints=new HashMap<>();
             for(String item:Main.env("REPLICA_ENDPOINTS","").split(",")){var pair=item.split("=",2);if(pair.length==2)endpoints.put(pair[0],pair[1]);}
@@ -94,6 +102,7 @@ final class Replication {
                         if(list!=null)for(var peer:list.getServersList()) {
                             if(peer.getName().equals(Main.NODE))continue;
                             for(String table:List.of("logins","channels","requests","publications")) {
+                                // Cada rodada começa do início: também encontra chaves inseridas antes do cursor.
                                 String after="";
                                 while(true) {
                                     var socket=ctx.createSocket(SocketType.REQ);socket.setLinger(0);socket.setReceiveTimeOut(1500);
@@ -103,6 +112,7 @@ final class Replication {
                                         Main.log("REPLICA SEND",q);socket.send(q.toByteArray(),0);byte[] raw=socket.recv(0);if(raw==null)break;
                                         var reply=Envelope.parseFrom(raw);Main.received(reply);Main.log("REPLICA RECV",reply);
                                         if(!reply.getRequestId().equals(q.getRequestId())||!reply.getStatus().equals("OK"))break;
+                                        // Decodifica o lote e avança o cursor somente quando há mais páginas.
                                         var batch=ReplicaBatch.parseFrom(Base64.getDecoder().decode(reply.getBody()));merge(db,batch);
                                         if(!batch.getMore())break;after=batch.getNextKey();
                                     } finally {ctx.destroySocket(socket);}

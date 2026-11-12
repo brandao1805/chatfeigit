@@ -12,9 +12,41 @@ replicação habilitada. Para reproduzir, siga a preparação local do README.
 
 Java compilado para nível Java 17 com Eclipse ECJ 3.39.0, Protobuf 3.25.5 e
 as dependências declaradas no pom.xml. A execução local usa o runtime Java
-instalado. Docker não está disponível neste ambiente. O build Maven dentro
-da imagem e a execução Docker Compose devem ser confirmados no computador
-da dupla com `docker compose up --build`.
+instalado.
+
+## Compose
+
+`docker compose config --quiet` passou com Docker Compose v5.6.1. A execução
+dos containers não pôde ser validada neste ambiente: `docker compose up
+--build -d` não conseguiu conectar ao socket
+`unix:///Users/brandao/.docker/run/docker.sock`, e o aplicativo Docker Desktop
+não está instalado. Portanto, os resultados abaixo validam os processos e a
+configuração Compose, mas não substituem uma execução completa de
+`docker compose up --build` em uma máquina com o daemon Docker ativo.
+
+Para concluir essa checagem na máquina de apresentação:
+
+```bash
+docker compose up --build -d
+docker compose ps
+docker compose logs --since=2m python-server-1 java-server-1 python-bot-1 java-bot-1
+docker compose down
+```
+
+Nos logs, confira os bots fazendo login e publicando, mensagens `SUB RECV`,
+registros `HEARTBEAT`, eleição e sincronização Berkeley. `docker compose ps`
+deve mostrar os onze serviços em execução antes do encerramento.
+
+## Ajuste da eleição
+
+Uma coleta de logs do Compose mostrou servidores alternando entre coordenadores
+diferentes durante respostas atrasadas. A detecção foi ajustada nas duas
+implementações: uma falha isolada de sonda não remove o servidor; são exigidas
+duas falhas consecutivas, com timeout de 1,5 segundo por tentativa. A sintaxe
+Python foi verificada e `mvn -DskipTests package` compilou a implementação
+Java. A execução Docker precisa ser repetida após este ajuste. Depois da
+inicialização, observe por pelo menos um minuto se os servidores convergem
+para o mesmo nome em suas linhas `ELECTED`.
 
 ## Resultados
 

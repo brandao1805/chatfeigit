@@ -52,9 +52,12 @@ sem heartbeat, inclusive quando está sem tráfego. Ao retornar ele se registra
 novamente. Os ranks são estáveis durante a execução da referência.
 
 O controle entre servidores usa REQ/REP em 5560. Cada servidor sonda os pares
-a cada dois segundos com ELECTION e escolhe o maior rank disponível. O eleito
-anuncia COORDINATOR pelo tópico `servers`. Esse mecanismo pressupõe uma rede
-conectada e pode ter líderes distintos durante partições de rede.
+a cada dois segundos com ELECTION e escolhe o maior rank disponível. Uma falha
+isolada de resposta não remove o par da eleição: são necessárias duas falhas
+consecutivas, com timeout de 1,5 segundo por sonda. Isso reduz trocas de líder
+causadas por atrasos momentâneos sob carga. O eleito anuncia COORDINATOR pelo
+tópico `servers`. O mecanismo pressupõe uma rede conectada e ainda pode ter
+líderes distintos durante partições de rede.
 
 A cada quinze mensagens de aplicação trocadas pelo servidor (REQ recebida,
 REP enviada ou PUB enviada), solicita-se sincronização. A thread de controle
@@ -69,6 +72,21 @@ O relógio lógico é incrementado antes de cada envio e atualizado por
 `max(local, recebido)` na recepção, seguindo a regra específica do enunciado.
 Cada thread tem seus próprios sockets e conexão SQLite. O contador lógico
 é protegido por exclusão mútua.
+
+## Mapa do código
+
+Os comentários nos fontes explicam as decisões junto ao trecho que as executa.
+Para uma leitura guiada, estes são os pontos de entrada principais:
+
+- `python/app.py`: referência, acesso SQLite, operações dos bots/servidores,
+  broker e proxy Pub/Sub.
+- `python/coordination.py` e `java/src/main/java/br/fei/chat/Coordination.java`: eleição, anúncios
+  do coordenador e ajuste Berkeley.
+- `python/replication.py` e `java/src/main/java/br/fei/chat/Replication.java`: exportação paginada,
+  comparação de conflitos e cópia entre bancos.
+- `java/src/main/java/br/fei/chat/Main.java`: implementação Java do contrato, bot e servidor.
+- `proto/chat.proto`: campos comuns que garantem a interoperabilidade binária.
+- `tests/`: cenários de integração por parte e verificação das duas linguagens.
 
 ## Replicação escolhida e justificativa
 
@@ -114,8 +132,13 @@ quatro tabelas pode ser observada parcialmente durante a sincronização.
 
 Não há exclusão de registros nesta versão. Uma futura operação de exclusão
 precisaria de tombstones. O ACK ao bot confirma o commit local. Se a única
-cópia de uma escrita for destruída antes de ser copiada, essa escrita não
-pode ser recuperada. Reiniciar com o volume preservado permite recuperá-la.
+cópia de uma escrita for destruída antes de ser copiada, essa escrita pode ser
+perdida. Como a replicação roda em ciclos de dois segundos, existe
+uma janela em que uma escrita ainda está apenas no servidor que a recebeu; o
+sistema não espera confirmação das outras réplicas antes de responder ao bot.
+Na apresentação, descreva isso como replicação eventual, sem garantia de
+quórum síncrono. Reiniciar com o volume preservado permite recuperar os dados
+que já foram gravados localmente.
 O broker, o proxy e a referência são componentes únicos nesta arquitetura.
 
 ## Contrato dos usuários

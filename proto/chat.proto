@@ -1,31 +1,47 @@
 syntax = "proto3";
 package chatfei;
+// Gera as classes Java dentro do pacote usado pelos fontes da aplicação.
 option java_package = "br.fei.chat.proto";
 option java_outer_classname = "Protocol";
-// Timestamps Unix em milissegundos UTC. request_id identifica uma operação.
+// Envelope comum: clientes, servidores, referência e réplicas usam o mesmo formato binário.
 message Envelope {
+ // UUID da operação, usado para correlacionar a resposta e reconhecer retransmissões.
  string request_id = 1;
+ // Horário Unix em milissegundos UTC no momento do envio.
  int64 timestamp_ms = 2;
+ // Tipo de pedido ou evento, por exemplo LOGIN, PUBLISH ou PUBLICATION.
  string operation = 3;
+ // Bot que iniciou a operação ou autor da publicação.
  string username = 4;
+ // Canal solicitado ou tópico da publicação.
  string channel = 5;
+ // Resultado da operação, como OK ou INVALID_CHANNEL.
  string status = 6;
+ // Texto adicional para erro ou explicação do resultado.
  string detail = 7;
+ // Lista de nomes devolvida por LIST_CHANNELS.
  repeated string channels = 8;
+ // Identidade do servidor que enviou o envelope.
  string server_id = 9;
+ // Conteúdo da mensagem ou payload de operações paginadas.
  string body = 10;
+ // Contador lógico Lamport do processo que enviou a mensagem.
  int64 logical_clock = 11;
+ // Posição atribuída pela referência na lista dos servidores.
  int32 rank = 12;
+ // Pares nome/rank devolvidos ao consultar servidores ativos.
  repeated ServerInfo servers = 13;
 }
 
-
+// Um item da lista de participantes disponíveis para eleição e replicação.
 message ServerInfo { string name = 1; int32 rank = 2; }
 
+// Linha de uma tabela SQLite convertida para strings para transferência entre linguagens.
 message ReplicaRow {
  string table = 1;
  repeated string values = 2;
 }
+// Página de registros; next_key permite pedir a página seguinte sem transferir tudo de uma vez.
 message ReplicaBatch {
  repeated ReplicaRow rows = 1;
  string next_key = 2;

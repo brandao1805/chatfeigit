@@ -1,5 +1,6 @@
 name: chatfei
 services:
+  # Serviço de referência: atribui ranks e mantém o conjunto de servidores ativos.
   reference:
     build:
       context: .
@@ -9,18 +10,21 @@ services:
     environment:
       NODE_ID: reference
       REFERENCE_TTL_SECONDS: "60"
+  # Broker REQ/REP compartilhado por todos os bots e servidores.
   broker:
     build:
       context: .
       dockerfile: python/Dockerfile
     command: [broker]
     init: true
+  # Proxy Pub/Sub: os servidores publicam no XSUB e os bots assinam via XPUB.
   pubsub:
     build:
       context: .
       dockerfile: python/Dockerfile
     command: [pubsub]
     init: true
+  # Dois servidores Python; cada um persiste em seu próprio volume SQLite.
   python-server-1:
     build:
       context: .
@@ -43,6 +47,7 @@ services:
       NODE_ID: python-server-2
     volumes:
       - python-server-2-data:/data
+  # Os bots Python executam login, seleção de canal, inscrição e publicação automáticos.
   python-bot-1:
     build:
       context: .
@@ -61,6 +66,7 @@ services:
     depends_on: [broker, pubsub]
     environment:
       NODE_ID: python-bot-2
+  # As mesmas funções também são implementadas em Java para interoperar com Python.
   java-server-1:
     build:
       context: .
@@ -102,6 +108,7 @@ services:
     environment:
       NODE_ID: java-bot-2
 volumes:
+  # Volumes separados preservam os bancos locais mesmo depois de docker compose down.
   python-server-1-data:
   python-server-2-data:
   java-server-1-data:
