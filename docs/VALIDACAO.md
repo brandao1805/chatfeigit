@@ -1,25 +1,29 @@
-# Validação da Parte 1
+# Validação da Parte 5
 
-Data: 05/11/2026.
+Os testes usam processos Python e Java reais, sockets ZeroMQ, Protobuf e bancos
+SQLite temporários separados. A suíte parte5.py compara todas as linhas das
+quatro tabelas em quatro réplicas, com 160 publicações para exigir paginação.
+Depois encerra um servidor Java, produz mais vinte mensagens, remove apenas
+o banco temporário desse servidor e inicia novamente, verificando recuperação
+e consulta paginada do histórico completo em todos os servidores.
 
-## Verificações executadas
+A suíte parte4.py verifica eleição, Berkeley e troca de coordenador com a
+replicação habilitada. Para reproduzir, siga a preparação local do README.
 
-- Compilação e empacotamento Java com Maven: BUILD SUCCESS.
-- Geração do contrato Python a partir de `proto/chat.proto`.
-- Integração TCP/ZeroMQ real, com mensagens Protobuf:
-  - bot Java -> servidor Python;
-  - bot Python -> servidor Java;
-  - login, criação e listagem;
-  - canal duplicado, nomes inválidos, operação desconhecida e Protobuf inválido;
-  - repetição do mesmo ID sem duplicar login no mesmo servidor;
-  - rejeição de ID reutilizado com conteúdo diferente;
-  - leitura dos canais após encerrar e reiniciar o servidor;
-  - execução da topologia com 9 processos: broker, quatro bots e quatro servidores;
-  - confirmação de requisições persistidas nos quatro bancos independentes.
-- YAML do Compose analisado: 9 serviços e 4 volumes exclusivos.
+Java compilado para nível Java 17 com Eclipse ECJ 3.39.0, Protobuf 3.25.5 e
+as dependências declaradas no pom.xml. A execução local usa o runtime Java
+instalado. Docker não está disponível neste ambiente. O build Maven dentro
+da imagem e a execução Docker Compose devem ser confirmados no computador
+da dupla com `docker compose up --build`.
 
-## Limite da validação
+## Resultados
 
-Docker não está disponível no ambiente de desenvolvimento utilizado. Portanto, os testes de integração rodaram como processos locais; não foram executados o build das imagens nem `docker compose up`. A dupla deve realizar essa verificação no Docker Desktop antes de entregar.
-
-Os testes são reproduzíveis por `python tests/integration.py`, depois de instalar as dependências, gerar o contrato Python e empacotar o Java conforme o README. Os bancos usados nos testes são temporários e são removidos ao final.
+```text
+PASS quatro réplicas iguais: logins, canais, requisições e 160 publicações paginadas
+PASS consulta paginada do histórico completo nas quatro réplicas
+PASS recuperação de banco vazio e mensagens produzidas durante a indisponibilidade
+PASS eleição: Java (maior rank) coordenador, Python seguidor
+PASS Berkeley: coleta TIME, média, ADJUST e anúncio Pub/Sub entre linguagens
+PASS falha: Python assume após desligamento do coordenador Java
+PASS sintaxe Python e estrutura YAML com onze serviços
+```

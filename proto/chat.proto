@@ -13,4 +13,21 @@ message Envelope {
  string detail = 7;
  repeated string channels = 8;
  string server_id = 9;
+ string body = 10;
+ int64 logical_clock = 11;
+ int32 rank = 12;
+ repeated ServerInfo servers = 13;
+}
+
+
+message ServerInfo { string name = 1; int32 rank = 2; }
+
+message ReplicaRow {
+ string table = 1;
+ repeated string values = 2;
+}
+message ReplicaBatch {
+ repeated ReplicaRow rows = 1;
+ string next_key = 2;
+ bool more = 3;
 }

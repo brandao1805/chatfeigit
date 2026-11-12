@@ -1,107 +1,199 @@
-# ChatFEI — Parte 1
+# ChatFEI — Parte 5 (versão final)
 
-Projeto de Sistemas Paralelos e Distribuídos (CC7261/FEI), para uma dupla.
-Implementa login, criação e listagem de canais. **Esta entrega cobre a Parte 1; as Partes 2 a 5 ainda não estão implementadas.**
+Projeto de Sistemas Paralelos e Distribuídos, CC7261/FEI.
 
-## Integrantes
-
-- Lucas de Almeida Brandão | 22.124.066-6 — Python (cliente e servidor).
-- Yuri Lucas Oishi | 22.225.025-0 — Java (cliente e servidor).
+- Lucas de Almeida Brandão, 22.124.066-6 — cliente e servidor Python.
+- Yuri Lucas Oishi, 22.225.025-0 — cliente e servidor Java.
 
 ## Executar
 
-Instale e inicie o Docker Desktop (inclui Compose). Extraia o ZIP, abra a pasta `chatfei` no VSCode e execute no terminal:
+Com Docker Desktop iniciado, abra um terminal na pasta que contém este README:
 
 ```bash
 docker compose up --build
 ```
 
-O comando inicia 9 containers: 2 bots Python, 2 bots Java, 2 servidores Python, 2 servidores Java e 1 broker Python. Não é necessário instalar Python, Java, Maven ou Protobuf no computador. A primeira execução precisa de internet para baixar imagens e dependências. Funciona com imagens para Intel/AMD e ARM, incluindo Macs Apple Silicon; a execução Docker ainda precisa ser validada no computador da dupla.
-
-Os bots fazem login, criam `geral` e um canal próprio e listam canais a cada 3 segundos. Os logs mostram SEND/RECV, request_id, timestamp, operação, conteúdo e servidor responsável. Os servidores registram também erros. Ctrl+C interrompe os serviços.
+O Compose inicia onze containers: quatro bots, quatro servidores, broker,
+proxy Pub/Sub e referência. Há dois bots e dois servidores por linguagem.
+A primeira execução baixa imagens e dependências. Os bots operam automaticamente.
 
 ```bash
 docker compose logs -f python-server-1 java-server-1
 docker compose down
-docker compose up
 ```
 
-`down` preserva os volumes. Para reiniciar com dados vazios, **apagando os dados da demonstração**, use `docker compose down -v`.
+Os quatro volumes SQLite são independentes e persistem após `down`.
+`docker compose down -v` apaga os dados da demonstração.
 
-## Arquitetura e escolhas
+## Funcionalidades acumuladas
 
-Bots REQ conectam ao broker ROUTER (`5555`). O broker encaminha as mensagens pelo DEALER (`5556`) aos servidores REP, distribuindo as requisições entre conexões disponíveis. As portas são internas à rede Compose. O broker preserva os frames de roteamento e não interpreta os dados.
+1. Login sem senha, criação e listagem de canais por Request-Reply.
+2. Publicação de mensagens e inscrições aleatórias por Publish-Subscribe.
+3. Relógio lógico, cadastro com ranks e heartbeat por dez requisições recebidas.
+4. Eleição pelo maior rank respondente, anúncio em `servers` e sincronização Berkeley.
+5. Replicação de logins, canais, requisições/respostas e publicações, recuperação de servidores e consulta do histórico.
 
-- Python: PyZMQ. Java: JeroMQ. Todos usam o mesmo contrato ZeroMQ e Protobuf.
-- Protobuf: `proto/chat.proto` é a única definição do contrato. O build gera as classes Python e Java. Não usamos gRPC: Protobuf serializa e ZeroMQ transporta.
-- SQLite: um arquivo `/data/chat.db` e um volume Docker exclusivo por servidor. Não existe banco compartilhado.
-- O broker é um componente auxiliar em Python, reutilizado pelas duas implementações.
-- Sem interface gráfica: os usuários são bots automáticos, conforme o enunciado.
+## Arquitetura
 
-## Contrato e regras
+Bots REQ conectam ao ROUTER do broker em 5555. O DEALER em 5556 distribui
+requisições aos servidores REP. Servidores PUB usam o XSUB do proxy em 5557,
+e assinantes usam XPUB em 5558. O tópico é o primeiro frame e o envelope
+Protobuf binário é o segundo. Os bots verificam igualdade do tópico, pois o
+filtro nativo do ZeroMQ aceita prefixos.
 
-Cada requisição contém `request_id` (UUID), `timestamp_ms` (Unix UTC em milissegundos), `operation` e `username`. Criação também contém `channel`. Respostas contêm o mesmo ID, timestamp próprio, operação, `status`, `detail`, `server_id` e, na listagem, `channels`.
+Python usa PyZMQ e Java usa JeroMQ. O contrato único é `proto/chat.proto`.
+O build gera os arquivos Protobuf para cada linguagem. A comunicação usa
+ZeroMQ e serialização Protobuf. Não há interface gráfica nem entrada manual
+para o funcionamento dos bots.
 
-| Operação | Entrada adicional | Resultado |
+A referência atende em 5559, atribui ranks e lista servidores ativos. O
+heartbeat é enviado após dez requisições. Um servidor expira após 60 segundos
+sem heartbeat, inclusive quando está sem tráfego. Ao retornar ele se registra
+novamente. Os ranks são estáveis durante a execução da referência.
+
+O controle entre servidores usa REQ/REP em 5560. Cada servidor sonda os pares
+a cada dois segundos com ELECTION e escolhe o maior rank disponível. O eleito
+anuncia COORDINATOR pelo tópico `servers`. Esse mecanismo pressupõe uma rede
+conectada e pode ter líderes distintos durante partições de rede.
+
+A cada quinze mensagens de aplicação trocadas pelo servidor (REQ recebida,
+REP enviada ou PUB enviada), solicita-se sincronização. A thread de controle
+pode agrupar solicitações enquanto uma rodada está em andamento. O coordenador
+coleta TIME, estima metade do RTT, calcula a média incluindo o próprio relógio
+e envia ADJUST com correções individuais. Os seguidores consultam CLOCK para
+obter a hora do coordenador. Os ajustes usam offsets, sem mudar a hora do host.
+A referência conserva o timestamp obrigatório do envelope, mas esse timestamp
+não é usado para sincronização após a Parte 4.
+
+O relógio lógico é incrementado antes de cada envio e atualizado por
+`max(local, recebido)` na recepção, seguindo a regra específica do enunciado.
+Cada thread tem seus próprios sockets e conexão SQLite. O contador lógico
+é protegido por exclusão mútua.
+
+## Replicação escolhida e justificativa
+
+Usamos **replicação passiva com atualização por pull e consistência eventual**.
+Cada servidor atende requisições e armazena seus resultados localmente. Uma
+thread consulta periodicamente os outros servidores e copia registros já
+persistidos, sem reexecutar operações de usuário nem republicar mensagens.
+
+A porta interna 5561 atende consultas REPLICA. Cada réplica descobre pares
+pela referência e percorre as tabelas `logins`, `channels`, `requests` e
+`publications`. A transferência é paginada em lotes de até 128 registros,
+ordenados pela chave primária. Cada rodada recomeça do início, o que também
+recupera registros inseridos em posições anteriores ao cursor e alterações
+resultantes de conflitos. A pausa entre rodadas é de dois segundos.
+
+A solução foi escolhida porque o broker distribui as escritas entre servidores.
+O pull periódico reúne os fragmentos de histórico sem depender de uma
+publicação Pub/Sub que possa ser perdida. Um servidor novo ou com banco vazio
+obtém as páginas dos pares disponíveis. Uma falha durante a transferência
+provoca nova tentativa em outra rodada. Registros existentes são comparados
+antes da gravação, tornando a reaplicação idempotente.
+
+### Contrato e resolução de conflitos
+
+`ReplicaRow` contém nome da tabela e valores das colunas na ordem do esquema.
+`ReplicaBatch` contém as linhas, o cursor `next_key` e o indicador `more`.
+O lote é serializado com Protobuf e colocado em Base64 no campo `body` do
+envelope, que também é transmitido como Protobuf binário. Os campos BLOB da
+tabela requests são representados por hexadecimal dentro da linha.
+
+Para a mesma chave, as duas linguagens escolhem a menor representação
+hexadecimal da linha Protobuf completa, em ordem lexicográfica. Esta é uma
+regra determinística de desempate, sem preferência por horário mais recente.
+Ela evita depender dos relógios físicos durante a resolução. As escritas
+aplicam a mesma regra em todas as réplicas e ocorrem em transações SQLite.
+As conexões aguardam até 30 segundos por uma trava de escrita.
+
+Essa regra é uma adaptação do mecanismo de resolução de conflitos visto em
+consistência eventual forte. Para um conjunto finito de registros, quando as
+escritas cessam e todos os pares voltam a se comunicar, a união das chaves e
+o desempate determinístico fazem os bancos convergirem. A atualização das
+quatro tabelas pode ser observada parcialmente durante a sincronização.
+
+Não há exclusão de registros nesta versão. Uma futura operação de exclusão
+precisaria de tombstones. O ACK ao bot confirma o commit local. Se a única
+cópia de uma escrita for destruída antes de ser copiada, essa escrita não
+pode ser recuperada. Reiniciar com o volume preservado permite recuperá-la.
+O broker, o proxy e a referência são componentes únicos nesta arquitetura.
+
+## Contrato dos usuários
+
+Cada requisição contém UUID `request_id`, `timestamp_ms`, `logical_clock`,
+`operation` e `username`. Nomes de usuário/canal aceitam 1 a 32 letras ASCII,
+números, `_` e `-`. LOGIN registra a entrada sem autenticação por senha.
+
+| Operação | Campos adicionais | Resultado |
 |---|---|---|
-| LOGIN | Nenhuma | OK; registra nome e timestamp, sem senha |
+| LOGIN | — | Registra login |
 | CREATE_CHANNEL | channel | OK ou ALREADY_EXISTS |
-| LIST_CHANNELS | Nenhuma | OK e lista ordenada de nomes |
+| LIST_CHANNELS | — | Lista de canais |
+| PUBLISH | channel e body | Registra e publica mensagem |
+| HISTORY | body com cursor, vazio na primeira página | ReplicaBatch em Base64 no body |
 
-Nomes são sensíveis a maiúsculas/minúsculas e aceitam 1–32 caracteres ASCII: letras, números, `_` e `-`. Não há sessão de autenticação: o login é um registro de entrada, e cada operação contém o usuário. Isso permite que requisições seguintes sejam atendidas por outro servidor. Senhas e controle de acesso não fazem parte deste protótipo.
+HISTORY retorna publicações de todos os canais, com até 128 linhas por página.
+Decodifique Base64 e interprete ReplicaBatch. Se `more` for verdadeiro, use
+`next_key` no body da próxima requisição, com um novo request_id. A ordenação
+é por ID para permitir paginação estável. O timestamp está disponível em cada
+linha para apresentação cronológica.
 
-Erros: INVALID_REQUEST, INVALID_USER, INVALID_CHANNEL, UNKNOWN_OPERATION, INVALID_PROTOBUF, STORAGE_ERROR e ID_CONFLICT. Os logs podem ser textuais; o corpo de todas as mensagens na rede é Protobuf binário.
+As publicações aceitam até 4096 bytes UTF-8. Para preservar o comportamento
+das etapas anteriores, PUBLISH registra localmente um tópico válido ainda
+não conhecido. Retransmissões usam o mesmo ID e conteúdo, com contador e
+horário de envio atualizados. A comparação para deduplicação ignora esses dois
+campos de transporte. Reutilizar o ID com outra operação/conteúdo retorna
+ID_CONFLICT. A deduplicação entre réplicas depende da propagação dos registros.
 
-O bot repete o login em caso de erro. Em timeout de 3 segundos, fecha o socket REQ e cria outro, repetindo a mesma operação com o mesmo ID e timestamp. O timestamp representa a criação/envio inicial da requisição; retransmissões preservam o envelope para identificação de duplicatas. Cada resposta recebe timestamp de envio atualizado.
+## Demonstração final
 
-O servidor salva requisição e resposta na mesma transação que seus efeitos. Repetir o mesmo ID e conteúdo no mesmo servidor devolve a resposta sem repetir o efeito. Reutilizar ID com conteúdo diferente retorna ID_CONFLICT. Essa deduplicação é **local**: uma retransmissão atendida por outro servidor pode ser registrada novamente. Não há garantia global de exactly-once.
+1. Execute o Compose e acompanhe os bots fazendo login, criando canais,
+   publicando e recebendo mensagens entre Python e Java.
+2. Mostre timestamp e logical_clock nos logs, além de REGISTER e HEARTBEAT.
+3. Identifique ELECTED e BERKELEY. Pare o coordenador com
+   `docker compose stop NOME_DO_SERVICO` e observe a nova eleição.
+4. Observe REPLICA MERGED nos servidores. Para comparar os bancos em um
+   instante estável, pause os quatro bots e aguarde a propagação:
 
-## Persistência e limitações desta etapa
+```bash
+docker compose stop python-bot-1 python-bot-2 java-bot-1 java-bot-2
+```
 
-Tabelas: `logins` (ID, usuário, timestamp), `channels` (nome, criador, timestamp) e `requests` (ID e envelopes binários da requisição/resposta). As consultas usam parâmetros SQL. O banco permanece disponível após reiniciar o container.
+5. Consulte o histórico pela operação HISTORY ou inspecione as tabelas SQLite.
+   Compare IDs e conteúdo, além das contagens. Com bots ativos, diferenças
+   transitórias são esperadas pelo modelo eventual.
+6. Pare um servidor, mantenha os bots produzindo mensagens e reinicie o
+   servidor. Aguarde a sincronização e mostre que ele recebeu os registros
+   produzidos enquanto estava fora.
 
-Até a Parte 5, cada servidor tem somente seus próprios registros. Assim, uma listagem balanceada pode retornar canais diferentes; ALREADY_EXISTS vale para o servidor que recebeu o pedido. Nenhum arquivo é compartilhado para contornar essa característica. A disponibilidade depende do broker, que é um ponto único de falha nesta versão.
+Para retomar os bots:
 
-Ainda faltam: publicações e proxy Pub/Sub (Parte 2), relógios lógicos e referência/heartbeat (Parte 3), eleição e Berkeley (Parte 4), replicação e recuperação do histórico completo (Parte 5).
+```bash
+docker compose start python-bot-1 python-bot-2 java-bot-1 java-bot-2
+```
 
-## Desenvolvimento local
+## Testes locais
 
-Python 3.12:
+Requer Python 3.12, Java 17 ou superior e Maven:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r python/requirements.txt
 python -m grpc_tools.protoc -Iproto --python_out=python proto/chat.proto
-```
-
-Java 17 e Maven:
-
-```bash
 mvn -f java/pom.xml package
+python tests/parte4.py
+python tests/parte5.py
 ```
 
-Para executar verificações de integração locais após preparar as duas linguagens:
+As suítes da versão final são parte4.py e parte5.py. Os arquivos integration.py
+e parte3.py documentam testes históricos. Os resultados e os limites da
+validação estão em `docs/VALIDACAO.md`.
 
-```bash
-python tests/integration.py
-```
+## Entrega
 
-O script usa portas locais temporárias, bancos temporários e encerra seus processos ao finalizar. Consulte `docs/VALIDACAO.md` para o resultado obtido durante a preparação.
+Publique os arquivos na branch `parte5`, criada a partir de `parte4`, e envie
+ao Moodle o ZIP e o link da branch. O ZIP não publica a branch automaticamente.
 
-## Organização da entrega
-
-Crie o repositório do grupo e uma branch para esta etapa:
-
-```bash
-git init
-git switch -c parte1
-git add .
-git commit -m "Implementa Parte 1 com Python Java ZeroMQ e Protobuf"
-```
-
-Depois configure o remoto do grupo e publique `parte1`. O ZIP não inclui histórico Git e não substitui o link da branch exigido no Moodle. Preencha os integrantes e valide `docker compose up --build` antes de enviar.
-
-## Referência
-
-[Enunciado do professor no commit utilizado](https://gitlab.com/laferreira/fei/cc7261/-/tree/e1aa88a80482869a9028643c2172a4d9983e0a2a/projeto).
+Enunciado utilizado:
+https://gitlab.com/laferreira/fei/cc7261/-/tree/e1aa88a80482869a9028643c2172a4d9983e0a2a/projeto
