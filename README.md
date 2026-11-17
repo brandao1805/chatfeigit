@@ -212,11 +212,3 @@ python tests/parte5.py
 As suítes da versão final são parte4.py e parte5.py. Os arquivos integration.py
 e parte3.py documentam testes históricos. Os resultados e os limites da
 validação estão em `docs/VALIDACAO.md`.
-
-## Entrega
-
-Publique os arquivos na branch `parte5`, criada a partir de `parte4`, e envie
-ao Moodle o ZIP e o link da branch. O ZIP não publica a branch automaticamente.
-
-Enunciado utilizado:
-https://gitlab.com/laferreira/fei/cc7261/-/tree/e1aa88a80482869a9028643c2172a4d9983e0a2a/projeto
