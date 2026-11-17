@@ -1,97 +1,172 @@
 # ChatFEI — Parte 2
 
-Projeto de Sistemas Paralelos e Distribuídos (CC7261/FEI), para uma dupla.
-Implementa login, criação e listagem de canais, publicação de mensagens e inscrição em canais. Esta entrega cobre as Partes 1 e 2.
+Sistema de chat distribuído com clientes e servidores em Python e Java. Implementa login, criação e listagem de canais, publicação de mensagens e inscrição em canais, combinando Request-Reply e Publish-Subscribe.
 
 ## Integrantes
 
-- Lucas de Almeida Brandão | 22.124.066-6 — Python (cliente e servidor).
-- Yuri Lucas Oishi | 22.225.025-0 — Java (cliente e servidor).
+- Lucas de Almeida Brandão | 22.124.066-6 — cliente e servidor Python.
+- Yuri Lucas Oishi | 22.225.025-0 — cliente e servidor Java.
 
-## Executar
+## Tecnologias
 
-Instale e inicie o Docker Desktop (inclui Compose). Extraia o ZIP, abra a pasta `chatfei` no VSCode e execute no terminal:
+- Python e PyZMQ.
+- Java e JeroMQ.
+- Protocol Buffers para serialização.
+- SQLite para persistência.
+- Docker e Docker Compose para execução dos serviços.
+
+## Execução
+
+Com o Docker Desktop iniciado, abra um terminal na pasta que contém `docker-compose.yaml`:
 
 ```bash
 docker compose up --build
 ```
 
-O comando inicia 10 containers: 2 bots Python, 2 bots Java, 2 servidores Python, 2 servidores Java, 1 broker Request-Reply e 1 proxy Pub/Sub. Não é necessário instalar Python, Java, Maven ou Protobuf no computador. A primeira execução precisa de internet para baixar imagens e dependências.
+O Compose inicia dez containers:
 
-Os bots fazem login e descobrem canais pelos servidores. Enquanto conhecem menos de cinco canais, tentam criar um canal novo. A cada rodada, cada bot se inscreve em mais um canal aleatório, até três inscrições. Depois escolhe um canal conhecido e envia dez mensagens de conteúdo aleatório, com uma pausa de um segundo entre os envios.
+- Dois bots Python.
+- Dois bots Java.
+- Dois servidores Python.
+- Dois servidores Java.
+- Um broker Request-Reply.
+- Um proxy Publish-Subscribe.
+
+A primeira execução baixa imagens e dependências. Não é necessário instalar Python, Java, Maven ou Protobuf localmente para executar pelo Docker.
+
+Os bots fazem login e consultam os canais. Enquanto conhecem menos de cinco canais, tentam criar um novo. A cada rodada, inscrevem-se em mais um canal aleatório, até três inscrições. Depois escolhem um canal conhecido e enviam dez mensagens de conteúdo aleatório, com intervalo de um segundo entre os envios.
+
+Para acompanhar os bots:
 
 ```bash
 docker compose logs -f python-bot-1 java-bot-1
 ```
 
-Nos logs, procure por `SUB inscrito em`, por uma resposta `PUBLISH` com `OK` e por `SUB RECV` com `PUBLICATION`. O campo `timestamp_ms` da publicação representa o horário do envio pelo servidor. O campo `received_at_ms` registra o horário da recepção pelo bot. O campo `server_id` identifica o servidor que publicou.
+Os registros `SUB inscrito em`, `PUBLISH` com status `OK` e `SUB RECV` com operação `PUBLICATION` indicam inscrição, publicação e recebimento.
 
-`down` preserva os volumes. Para reiniciar com dados vazios, **apagando os dados da demonstração**, use `docker compose down -v`.
+Para encerrar:
 
-## Arquitetura e escolhas
+```bash
+docker compose down
+```
 
-Bots REQ conectam ao broker ROUTER (`5555`). O broker encaminha as mensagens pelo DEALER (`5556`) aos servidores REP, distribuindo as requisições entre conexões disponíveis. As portas são internas à rede Compose. O broker preserva os frames de roteamento e não interpreta os dados.
+Os volumes são preservados. Para apagar também os dados persistidos:
 
-O bot pede a publicação via Request-Reply. O servidor grava a mensagem no SQLite, envia a publicação pelo socket PUB e responde ao bot. Os servidores PUB se conectam ao XSUB do proxy `pubsub:5557`. Os bots SUB se conectam ao XPUB em `pubsub:5558`. O proxy roda em um container separado e encaminha mensagens e inscrições. O tópico é o nome do canal no primeiro frame. O segundo frame contém o envelope Protobuf com operação `PUBLICATION`. Os bots verificam a igualdade do nome, pois o filtro SUB de ZeroMQ funciona por prefixo.
+```bash
+docker compose down -v
+```
 
-O status `OK` confirma o registro local e o encaminhamento pelo socket PUB. Um assinante recebe as publicações enquanto está conectado e inscrito. Mensagens anteriores à inscrição ou perdidas durante uma desconexão continuam no SQLite do servidor que as gravou.
+## Arquitetura
 
-- Python: PyZMQ. Java: JeroMQ. Todos usam o mesmo contrato ZeroMQ e Protobuf.
-- Protobuf: `proto/chat.proto` é a única definição do contrato. O build gera as classes Python e Java. Não usamos gRPC: Protobuf serializa e ZeroMQ transporta.
-- SQLite: um arquivo `/data/chat.db` e um volume Docker exclusivo por servidor. Não existe banco compartilhado.
-- O broker é um componente auxiliar em Python, reutilizado pelas duas implementações.
-- Sem interface gráfica: os usuários são bots automáticos, conforme o enunciado.
+### Request-Reply
 
-## Contrato e regras
+Os bots REQ se conectam ao ROUTER do broker na porta 5555. O DEALER do broker, na porta 5556, distribui as requisições aos servidores REP.
 
-Cada requisição contém `request_id` (UUID), `timestamp_ms` (Unix UTC em milissegundos), `operation` e `username`. Criação também contém `channel`. Respostas contêm o mesmo ID, timestamp próprio, operação, `status`, `detail`, `server_id` e, na listagem, `channels`.
+O broker preserva os frames de roteamento e não interpreta o conteúdo das mensagens.
+
+### Publish-Subscribe
+
+O bot solicita uma publicação por Request-Reply. O servidor grava a mensagem no SQLite, envia a publicação pelo socket PUB e responde ao bot.
+
+Os servidores PUB se conectam ao XSUB do proxy em `pubsub:5557`. Os bots SUB se conectam ao XPUB em `pubsub:5558`.
+
+O proxy encaminha publicações e inscrições. Cada publicação possui dois frames:
+
+1. Nome do canal.
+2. Envelope Protobuf com operação `PUBLICATION`.
+
+Os bots verificam a igualdade do nome do canal, pois o filtro SUB do ZeroMQ utiliza correspondência por prefixo.
+
+As portas são internas à rede Compose.
+
+### Comunicação entre linguagens
+
+Python utiliza PyZMQ e Java utiliza JeroMQ. O contrato está em `proto/chat.proto`, a partir do qual são geradas as classes das duas linguagens.
+
+O Protobuf serializa as mensagens e o ZeroMQ realiza o transporte. Não há comunicação gRPC.
+
+## Contrato de comunicação
+
+Cada requisição contém `request_id`, `timestamp_ms`, `operation` e `username`. Os campos `channel` e `body` são utilizados conforme a operação.
+
+As respostas incluem o identificador da requisição, timestamp próprio, operação, status, descrição e `server_id`.
 
 | Operação | Entrada adicional | Resultado |
 |---|---|---|
-| LOGIN | Nenhuma | OK; registra nome e timestamp, sem senha |
+| LOGIN | Nenhuma | Registra a entrada do usuário |
 | CREATE_CHANNEL | channel | OK ou ALREADY_EXISTS |
-| LIST_CHANNELS | Nenhuma | OK e lista ordenada de nomes |
+| LIST_CHANNELS | Nenhuma | Lista ordenada dos canais locais |
 | PUBLISH | channel e body | OK, INVALID_CHANNEL ou INVALID_BODY |
 
-Nomes são sensíveis a maiúsculas/minúsculas e aceitam 1–32 caracteres ASCII: letras, números, `_` e `-`. Não há sessão de autenticação: o login é um registro de entrada, e cada operação contém o usuário. Isso permite que requisições seguintes sejam atendidas por outro servidor. Senhas e controle de acesso não fazem parte deste protótipo.
+Nomes de usuários e canais diferenciam maiúsculas de minúsculas e aceitam de 1 a 32 caracteres ASCII: letras, números, `_` e `-`.
 
-O corpo da publicação deve ter conteúdo e pode ter até 4096 bytes em UTF-8. Como os catálogos ainda são locais e o broker pode encaminhar uma publicação a outro servidor, o servidor que recebe `PUBLISH` registra localmente o tópico válido se ainda não o conhece. Essa operação não consulta os outros bancos.
+O login não utiliza senha nem mantém sessão de autenticação. Cada operação informa o usuário.
 
-Erros: INVALID_BODY, INVALID_REQUEST, INVALID_USER, INVALID_CHANNEL, UNKNOWN_OPERATION, INVALID_PROTOBUF, STORAGE_ERROR e ID_CONFLICT. Os logs podem ser textuais; o corpo de todas as mensagens na rede é Protobuf binário.
+O conteúdo da publicação deve ser não vazio e ter até 4096 bytes em UTF-8.
 
-O bot repete o login em caso de erro. Em timeout de 3 segundos, fecha o socket REQ e cria outro, repetindo a mesma operação com o mesmo ID e timestamp. O timestamp representa a criação/envio inicial da requisição; retransmissões preservam o envelope para identificação de duplicatas. Cada resposta recebe timestamp de envio atualizado.
+Como o broker pode encaminhar uma publicação para um servidor que ainda não conhece o canal, `PUBLISH` registra localmente um nome de canal válido quando necessário.
 
-O servidor salva requisição e resposta na mesma transação que seus efeitos. Repetir o mesmo ID e conteúdo no mesmo servidor devolve a resposta sem repetir o efeito. Reutilizar ID com conteúdo diferente retorna ID_CONFLICT. Essa deduplicação é **local**: uma retransmissão atendida por outro servidor pode ser registrada novamente. Não há garantia global de exactly-once.
+## Publicações e recebimento
 
-## Persistência e limitações desta etapa
+O status `OK` confirma o registro local e o encaminhamento da publicação pelo socket PUB. Não confirma o recebimento por todos os assinantes.
 
-Tabelas: `logins` (ID, usuário, timestamp), `channels` (nome, criador, timestamp) `requests` (ID e envelopes binários da requisição/resposta) e `publications` (ID, canal, autor, horário do envio e texto). As consultas usam parâmetros SQL. O banco permanece disponível após reiniciar o container.
+Um assinante recebe mensagens enquanto está conectado e inscrito. Publicações anteriores à inscrição ou perdidas durante uma desconexão permanecem no banco do servidor que as gravou, mas não são reenviadas automaticamente pelo Pub/Sub.
 
-Até a Parte 5, cada servidor tem somente seus próprios registros. Assim, uma listagem balanceada pode retornar canais diferentes; ALREADY_EXISTS vale para o servidor que recebeu o pedido. Nenhum arquivo é compartilhado para contornar essa característica. A disponibilidade depende do broker, que é um ponto único de falha nesta versão.
+Nos logs:
 
-Ainda faltam relógios lógicos e referência/heartbeat (Parte 3), eleição e Berkeley (Parte 4), replicação e recuperação do histórico completo (Parte 5).
+- `timestamp_ms` representa o horário de envio da publicação pelo servidor.
+- `received_at_ms` registra o horário de recebimento pelo bot.
+- `server_id` identifica o servidor responsável.
+
+## Erros e retransmissões
+
+Os códigos de erro incluem `INVALID_BODY`, `INVALID_REQUEST`, `INVALID_USER`, `INVALID_CHANNEL`, `UNKNOWN_OPERATION`, `INVALID_PROTOBUF`, `STORAGE_ERROR` e `ID_CONFLICT`.
+
+Em timeout de três segundos, o bot recria o socket REQ e repete a operação com o mesmo identificador e timestamp.
+
+O servidor salva requisição, resposta e efeitos na mesma transação. A repetição do mesmo identificador e conteúdo no mesmo servidor retorna a resposta armazenada. Outro conteúdo com o mesmo identificador retorna `ID_CONFLICT`.
+
+A deduplicação é local, sem garantia global de processamento exatamente uma vez.
+
+## Persistência
+
+Cada servidor possui um arquivo `/data/chat.db` em volume Docker exclusivo.
+
+| Tabela | Conteúdo |
+|---|---|
+| logins | Identificador, usuário e timestamp |
+| channels | Nome, criador e timestamp |
+| requests | Identificador e envelopes binários da requisição e resposta |
+| publications | Identificador, canal, autor, horário e texto |
+
+As consultas utilizam parâmetros SQL. Os bancos não são compartilhados.
+
+## Limitações
+
+- Não há replicação entre os bancos.
+- A listagem de canais depende do servidor que atende a requisição.
+- `ALREADY_EXISTS` considera somente os registros locais.
+- Não há relógio lógico, serviço de referência, eleição ou sincronização Berkeley.
+- Broker e proxy são componentes únicos.
+- O Pub/Sub não recupera automaticamente mensagens perdidas.
+- Não há autenticação por senha nem controle de acesso.
 
 ## Desenvolvimento local
 
-Python 3.12:
+Requisitos: Python 3.12, Java 17 e Maven.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r python/requirements.txt
 python -m grpc_tools.protoc -Iproto --python_out=python proto/chat.proto
-```
-
-Java 17 e Maven:
-
-```bash
 mvn -f java/pom.xml package
 ```
 
-Para executar verificações de integração locais após preparar as duas linguagens:
+## Testes de integração
 
 ```bash
 python tests/integration.py
 ```
 
-O script usa portas locais temporárias, bancos temporários e encerra seus processos ao finalizar. Consulte `docs/VALIDACAO.md` para o resultado obtido durante a preparação.
+Os testes utilizam processos, portas e bancos temporários. Verificam operações de usuários e canais, publicação entre Python e Java, validação de mensagens, deduplicação e persistência.
