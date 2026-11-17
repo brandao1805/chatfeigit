@@ -15,13 +15,29 @@ Sistema de chat distribuído com clientes e servidores em Python e Java. Impleme
 - SQLite para persistência.
 - Docker e Docker Compose para execução dos serviços.
 
+## Justificativa das escolhas
+
+Python e Java permitem implementar clientes e servidores em linguagens diferentes e verificar sua interoperabilidade. PyZMQ e JeroMQ oferecem suporte aos padrões de comunicação utilizados pelo sistema.
+
+Protocol Buffers foi escolhido pela serialização binária e pela geração de classes para as duas linguagens a partir de um contrato comum.
+
+SQLite foi escolhido por permitir persistência em disco e transações sem exigir um serviço de banco separado. Cada servidor mantém um arquivo próprio em volume exclusivo.
+
+Docker Compose reúne os serviços e sua rede em uma configuração única, permitindo iniciar clientes, servidores e componentes auxiliares com um único comando.
+
+Request-Reply permite confirmar operações e informar erros ao bot. Publish-Subscribe distribui as publicações aos clientes inscritos nos canais. O armazenamento das publicações preserva identificador, canal, autor, timestamp e conteúdo para consultas posteriores.
+
+Ao receber uma publicação, o bot exibe o canal, o conteúdo, o timestamp de envio e o timestamp de recebimento.
+
 ## Execução
 
 Com o Docker Desktop iniciado, abra um terminal na pasta que contém `docker-compose.yaml`:
 
 ```bash
-docker compose up --build
+docker compose up
 ```
+
+Para reconstruir as imagens após alterações no código ou nas dependências, utilize `docker compose up --build`.
 
 O Compose inicia dez containers:
 
