@@ -15,13 +15,29 @@ Sistema de chat distribuído em Python e Java com Request-Reply, Publish-Subscri
 - SQLite.
 - Docker e Docker Compose.
 
+## Justificativa das escolhas
+
+Python e Java permitem implementar clientes e servidores em linguagens diferentes e verificar sua interoperabilidade. PyZMQ e JeroMQ oferecem suporte aos padrões de comunicação utilizados pelo sistema.
+
+Protocol Buffers foi escolhido pela serialização binária e pela geração de classes para as duas linguagens a partir de um contrato comum.
+
+SQLite foi escolhido por permitir persistência em disco e transações sem exigir um serviço de banco separado. Cada servidor mantém um arquivo próprio em volume exclusivo.
+
+Docker Compose reúne os serviços e sua rede em uma configuração única, permitindo iniciar clientes, servidores e componentes auxiliares com um único comando.
+
+Request-Reply permite confirmar operações e informar erros ao bot. Publish-Subscribe distribui as publicações aos clientes inscritos nos canais. O armazenamento das publicações preserva identificador, canal, autor, timestamp e conteúdo para consultas posteriores.
+
+Ao receber uma publicação, o bot exibe o canal, o conteúdo, o timestamp de envio e o timestamp de recebimento.
+
 ## Execução
 
 Com o Docker Desktop iniciado, execute na pasta que contém `docker-compose.yaml`:
 
 ```bash
-docker compose up --build
+docker compose up
 ```
+
+Para reconstruir as imagens após alterações no código ou nas dependências, utilize `docker compose up --build`.
 
 O Compose inicia onze containers:
 
@@ -108,7 +124,7 @@ Servidores sem heartbeat por 60 segundos são removidos da lista de ativos. Como
 
 Os ranks permanecem estáveis durante a execução da referência.
 
-As respostas de `REGISTER` e `HEARTBEAT` mantêm o timestamp do envelope, mas esse valor não é utilizado para ajustar os relógios nesta versão.
+O heartbeat confirma a disponibilidade do servidor e não fornece um valor de horário para sincronização. O envelope mantém o timestamp de envio obrigatório do protocolo. A sincronização física utiliza o coordenador eleito.
 
 ## Eleição de coordenador
 
