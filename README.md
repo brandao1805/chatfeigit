@@ -27,13 +27,29 @@ Sistema de chat distribuído com clientes e servidores em Python e Java. Utiliza
 - SQLite.
 - Docker e Docker Compose.
 
+## Justificativa das escolhas
+
+Python e Java permitem implementar clientes e servidores em linguagens diferentes e verificar sua interoperabilidade. PyZMQ e JeroMQ oferecem suporte aos padrões de comunicação utilizados pelo sistema.
+
+Protocol Buffers foi escolhido pela serialização binária e pela geração de classes para as duas linguagens a partir de um contrato comum.
+
+SQLite foi escolhido por permitir persistência em disco e transações sem exigir um serviço de banco separado. Cada servidor mantém um arquivo próprio em volume exclusivo.
+
+Docker Compose reúne os serviços e sua rede em uma configuração única, permitindo iniciar clientes, servidores e componentes auxiliares com um único comando.
+
+Request-Reply permite confirmar operações e informar erros ao bot. Publish-Subscribe distribui as publicações aos clientes inscritos nos canais. O armazenamento das publicações preserva identificador, canal, autor, timestamp e conteúdo para consultas posteriores.
+
+Ao receber uma publicação, o bot exibe o canal, o conteúdo, o timestamp de envio e o timestamp de recebimento.
+
 ## Execução
 
 Com o Docker Desktop iniciado, execute na pasta que contém `docker-compose.yaml`:
 
 ```bash
-docker compose up --build
+docker compose up
 ```
+
+Para reconstruir as imagens após alterações no código ou nas dependências, utilize `docker compose up --build`.
 
 O Compose inicia onze containers:
 
@@ -151,7 +167,7 @@ O coordenador coleta os relógios com `TIME`, estima metade do RTT, calcula a m�
 
 Os seguidores consultam `CLOCK` para obter a hora do coordenador.
 
-Os ajustes utilizam offsets da aplicação, sem modificar o relógio do host. O timestamp da referência permanece no envelope, mas não é utilizado como fonte de sincronização nesta versão.
+Os ajustes utilizam offsets da aplicação, sem modificar o relógio do host. O heartbeat confirma a disponibilidade do servidor e não fornece um valor de horário para sincronização. O envelope mantém o timestamp de envio obrigatório do protocolo. A sincronização física utiliza o coordenador eleito.
 
 ## Organização do código
 
@@ -168,7 +184,7 @@ Os ajustes utilizam offsets da aplicação, sem modificar o relógio do host. O 
 
 ## Replicação
 
-O sistema utiliza replicação passiva com atualização por pull e consistência eventual.
+O sistema utiliza replicação de registros por pull, com múltiplos servidores aceitando escritas e consistência eventual.
 
 Cada servidor atende requisições e armazena seus resultados localmente. Uma thread consulta periodicamente os pares e copia registros persistidos, sem reexecutar operações de usuário nem republicar mensagens.
 
@@ -192,6 +208,14 @@ Um servidor novo ou com banco vazio consulta os pares disponíveis. Uma falha de
 O broker distribui as escritas entre diferentes servidores. A consulta periódica reúne esses registros sem depender exclusivamente de notificações Pub/Sub, que podem ser perdidas.
 
 A comparação antes da gravação torna a reaplicação idempotente. A recuperação utiliza o mesmo mecanismo de consulta e importação dos registros.
+
+### Adaptações do método
+
+Como o broker distribui requisições entre todos os servidores, não existe um único servidor primário responsável pelas escritas. Cada servidor aceita operações localmente e importa os registros persistidos pelos pares.
+
+A replicação transfere o estado armazenado, sem reexecutar operações nem republicar mensagens. Foram adicionadas paginação, reaplicação idempotente e uma regra determinística para resolver conflitos de mesma chave.
+
+A convergência ocorre após a propagação dos registros, desde que os servidores possam se comunicar. Não há igualdade instantânea entre os bancos. O coordenador eleito é responsável pela sincronização dos relógios, não pela centralização das escritas.
 
 ### Formato dos registros
 
