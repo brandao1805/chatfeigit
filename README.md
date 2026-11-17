@@ -97,15 +97,6 @@ python tests/parte3.py
 
 O script usa portas locais temporárias, bancos temporários e encerra seus processos ao finalizar. Consulte `docs/VALIDACAO.md` para o resultado obtido durante a preparação.
 
-## Organização da entrega
-
-A Parte 3 deve ser publicada na branch `parte3` a partir de `parte2`. No Moodle, entregue este ZIP e o link da branch `parte3`. O ZIP não cria nem publica uma branch automaticamente.
-
-## Referência
-
-[Enunciado do professor no commit utilizado](https://gitlab.com/laferreira/fei/cc7261/-/tree/e1aa88a80482869a9028643c2172a4d9983e0a2a/projeto).
-
-
 ## Parte 3: relógios e heartbeat
 
 ### Relógio lógico
