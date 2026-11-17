@@ -95,11 +95,3 @@ python tests/integration.py
 ```
 
 O script usa portas locais temporárias, bancos temporários e encerra seus processos ao finalizar. Consulte `docs/VALIDACAO.md` para o resultado obtido durante a preparação.
-
-## Organização da entrega
-
-A Parte 2 deve ser publicada na branch `parte2` a partir de `parte1`. No Moodle, entregue o ZIP e o link da branch `parte2`.
-
-## Referência
-
-[Enunciado do professor no commit utilizado](https://gitlab.com/laferreira/fei/cc7261/-/tree/e1aa88a80482869a9028643c2172a4d9983e0a2a/projeto).
