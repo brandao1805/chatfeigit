@@ -1,8 +1,5 @@
 # ChatFEI — Parte 1
 
-Projeto de Sistemas Paralelos e Distribuídos (CC7261/FEI), para uma dupla.
-Implementa login, criação e listagem de canais. **Esta entrega cobre a Parte 1; as Partes 2 a 5 ainda não estão implementadas.**
-
 ## Integrantes
 
 - Lucas de Almeida Brandão | 22.124.066-6 — Python (cliente e servidor).
@@ -88,20 +85,3 @@ python tests/integration.py
 ```
 
 O script usa portas locais temporárias, bancos temporários e encerra seus processos ao finalizar. Consulte `docs/VALIDACAO.md` para o resultado obtido durante a preparação.
-
-## Organização da entrega
-
-Crie o repositório do grupo e uma branch para esta etapa:
-
-```bash
-git init
-git switch -c parte1
-git add .
-git commit -m "Implementa Parte 1 com Python Java ZeroMQ e Protobuf"
-```
-
-Depois configure o remoto do grupo e publique `parte1`. O ZIP não inclui histórico Git e não substitui o link da branch exigido no Moodle. Preencha os integrantes e valide `docker compose up --build` antes de enviar.
-
-## Referência
-
-[Enunciado do professor no commit utilizado](https://gitlab.com/laferreira/fei/cc7261/-/tree/e1aa88a80482869a9028643c2172a4d9983e0a2a/projeto).
