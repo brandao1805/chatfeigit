@@ -96,16 +96,6 @@ python tests/parte4.py
 
 O script usa portas locais temporárias, bancos temporários e encerra seus processos ao finalizar. Consulte `docs/VALIDACAO.md` para o resultado obtido durante a preparação.
 
-## Organização da entrega
-
-A Parte 4 deve ser publicada na branch `parte4` a partir de `parte3`. No Moodle, entregue este ZIP e o link da branch `parte4`. O ZIP não cria nem publica uma branch automaticamente.
-
-## Referência
-
-[Enunciado do professor no commit utilizado](https://gitlab.com/laferreira/fei/cc7261/-/tree/e1aa88a80482869a9028643c2172a4d9983e0a2a/projeto).
-
-
-
 ## Parte 4 — Eleição e Berkeley
 
 Cada servidor mantém o nome do coordenador e executa controle em threads
